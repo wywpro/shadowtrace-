@@ -174,9 +174,7 @@ def test_opaque_external_id_shapes_across_fixtures() -> None:
     assert seen_digit and seen_uuid and seen_long
 
 
-_DOC_NETS = [
-    ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")
-]
+_DOC_NETS = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
 
 
 def _iter_ipv4(obj: Any) -> list[str]:
