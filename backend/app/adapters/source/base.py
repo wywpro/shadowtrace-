@@ -37,6 +37,18 @@ class SourcePage(BaseModel):
     schema_version: str = "1"
 
 
+class SourceEvidencePage(BaseModel):
+    """Adapter-normalized deep telemetry ready for EvidenceProjection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    records_by_source: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    source_product: str
+    source_tenant_id: str
+    connector_id: str
+    schema_version: str = "1"
+
+
 class BaseSourceAdapter(ABC):
     """Pure-read adapter. Implementations must not mutate external systems."""
 
@@ -63,6 +75,14 @@ class BaseSourceAdapter(ABC):
         source_object_id: str,
     ) -> SourceIncident | SourceAlert | SourceAsset | SourceLog | None:
         """Optional single-object fetch. Default: not implemented."""
+        return None
+
+    async def list_evidence_records(
+        self,
+        *,
+        updated_after: datetime | None = None,
+    ) -> SourceEvidencePage | None:
+        """Optional deep-telemetry projection page. Default: unavailable."""
         return None
 
     @abstractmethod

@@ -67,7 +67,7 @@ async def test_mock_xdr_http_pipeline_persists_queryable_frozen_context(
     assert summary.watermark_after is not None
 
     assert await _count(db_session, orm.SecurityEvent) == 1
-    assert await _count(db_session, orm.SourceObject) == 10
+    assert await _count(db_session, orm.SourceObject) >= 10
     assert await _count(db_session, orm.SourceEventLink) == 4
 
     expected_assets = {
@@ -84,7 +84,8 @@ async def test_mock_xdr_http_pipeline_persists_queryable_frozen_context(
         (
             await db_session.scalars(
                 select(orm.SourceObject.source_object_id).where(
-                    orm.SourceObject.source_kind == SourceObjectKind.ASSET.value
+                    orm.SourceObject.source_kind == SourceObjectKind.ASSET.value,
+                    orm.SourceObject.connector_id != "mock_xdr-evidence",
                 )
             )
         ).all()
@@ -92,13 +93,28 @@ async def test_mock_xdr_http_pipeline_persists_queryable_frozen_context(
     logs = (
         await db_session.scalars(
             select(orm.SourceObject).where(
-                orm.SourceObject.source_kind == SourceObjectKind.LOG.value
+                orm.SourceObject.source_kind == SourceObjectKind.LOG.value,
+                orm.SourceObject.connector_id != "mock_xdr-evidence",
             )
         )
     ).all()
     assert assets == expected_assets
     assert {row.source_object_id for row in logs} == expected_logs
     assert all(row.parent_source_object_id for row in logs)
+
+    assert mock_xdr_state.scenario is not None
+    projected_ids = set(
+        (
+            await db_session.scalars(
+                select(orm.SourceObject.source_object_id).where(
+                    orm.SourceObject.connector_id == "mock_xdr-evidence"
+                )
+            )
+        ).all()
+    )
+    assert projected_ids == {
+        str(record["record_id"]) for record in mock_xdr_state.scenario.telemetry_timeline
+    }
 
     listed = await event_service.list_events(status=EventStatus.NEW)
     assert listed.total == 1

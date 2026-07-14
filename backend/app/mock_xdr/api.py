@@ -159,6 +159,34 @@ def create_app(*, state: MockXDRState | None = None) -> FastAPI:
             commit_watermark=commit,
         )
 
+    @app.get("/mock-xdr/v1/evidence")
+    def list_evidence(
+        updated_after: datetime | None = None,
+        _: None = Depends(_require_read),
+        st: MockXDRState = Depends(_state),
+    ) -> dict[str, Any]:
+        _maybe_fault(st)
+        scenario = st.scenario
+        records_by_source: dict[str, list[dict[str, Any]]] = {}
+        if scenario is not None:
+            for record in scenario.telemetry_timeline:
+                logged_at = _telemetry_time(record)
+                if (
+                    updated_after is not None
+                    and logged_at is not None
+                    and logged_at <= updated_after
+                ):
+                    continue
+                channel = str(record.get("channel") or "unknown")
+                records_by_source.setdefault(channel, []).append(dict(record))
+        return {
+            "records_by_source": records_by_source,
+            "source_product": "mock_xdr",
+            "source_tenant_id": (scenario.source_tenant_id if scenario is not None else "unknown"),
+            "connector_id": "mock_xdr-evidence",
+            "schema_version": st.failure_profile.schema_version_override or "1",
+        }
+
     @app.get("/mock-xdr/v1/connectors")
     def list_connectors(
         _: None = Depends(_require_read),
@@ -334,6 +362,16 @@ def create_app(*, state: MockXDRState | None = None) -> FastAPI:
         return st.readback_source_disposition(kind, object_id)
 
     return app
+
+
+def _telemetry_time(record: dict[str, Any]) -> datetime | None:
+    raw = record.get("logged_at")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _bearer(authorization: str | None) -> str | None:
