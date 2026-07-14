@@ -1,4 +1,4 @@
-"""Tools package (ISSUE-006 contracts; registry/executor land in later Issues)."""
+"""Tools package: baseline specs (ISSUE-006) and ToolRegistry (ISSUE-018)."""
 
 from app.tools.specs import BASELINE_TOOL_METAS, BASELINE_TOOL_NAMES, baseline_tool_index
 
