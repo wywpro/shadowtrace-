@@ -29,6 +29,15 @@ _OBJECT_TYPES = [
     SourceObjectKind.ASSET,
     SourceObjectKind.LOG,
 ]
+_TELEMETRY_CHANNEL_BY_FILE = {
+    "identity_logs.json": "identity",
+    "endpoint_logs.json": "endpoint",
+    "dlp_logs.json": "dlp",
+    "network_logs.json": "network",
+    "dns_logs.json": "dns",
+    "asset_data.json": "asset",
+    "threat_intel.json": "threat_intel",
+}
 
 
 class FileIngester:
@@ -70,11 +79,7 @@ class FileIngester:
                 mock_dir=path,
             )
             _scope_file_checkpoint(adapter, path, scenario_path.name)
-            return await self._source_ingester.poll(
-                adapter,
-                _OBJECT_TYPES,
-                batch_size,
-            )
+            return await self._ingest_scenario_adapter(adapter, batch_size)
 
         if scenario is not None:
             adapter = FileSourceAdapter(
@@ -82,11 +87,7 @@ class FileIngester:
                 mock_dir=path,
             )
             _scope_file_checkpoint(adapter, path, scenario)
-            return await self._source_ingester.poll(
-                adapter,
-                _OBJECT_TYPES,
-                batch_size,
-            )
+            return await self._ingest_scenario_adapter(adapter, batch_size)
 
         scenario_files = sorted(path.glob("*.scenario.json"))
         if len(scenario_files) == 1:
@@ -95,16 +96,25 @@ class FileIngester:
                 mock_dir=path,
             )
             _scope_file_checkpoint(adapter, path, scenario_files[0].name)
-            return await self._source_ingester.poll(
-                adapter,
-                _OBJECT_TYPES,
-                batch_size,
-            )
+            return await self._ingest_scenario_adapter(adapter, batch_size)
 
         return await self._ingest_legacy_telemetry(path)
 
+    async def _ingest_scenario_adapter(
+        self,
+        adapter: FileSourceAdapter,
+        batch_size: int,
+    ) -> IngestionSummary:
+        summary = await self._source_ingester.poll(
+            adapter,
+            _OBJECT_TYPES,
+            batch_size,
+        )
+        return summary
+
     async def _ingest_legacy_telemetry(self, path: Path) -> IngestionSummary:
         records: list[dict[str, Any]] = []
+        records_by_source: dict[str, list[dict[str, Any]]] = {}
         for file_path in sorted(path.glob("*.json")):
             if file_path.name.endswith(".scenario.json"):
                 continue
@@ -126,10 +136,15 @@ class FileIngester:
                     ],
                 )
             if isinstance(raw, list):
-                records.extend(item for item in raw if isinstance(item, dict))
+                valid = [item for item in raw if isinstance(item, dict)]
+                records.extend(valid)
+                channel = _TELEMETRY_CHANNEL_BY_FILE.get(file_path.name)
+                if channel is not None:
+                    records_by_source[channel] = valid
 
         raw_alerts = self._builder.build(records)
         summary = IngestionSummary()
+        await self._project_telemetry(records_by_source, summary)
         for raw_alert in raw_alerts:
             try:
                 source = _synthetic_source_alert(raw_alert)
@@ -162,6 +177,33 @@ class FileIngester:
         }
         return summary
 
+    async def _project_telemetry(
+        self,
+        records_by_source: dict[str, list[dict[str, Any]]],
+        summary: IngestionSummary,
+    ) -> None:
+        if not records_by_source:
+            return
+        try:
+            await self._source_ingester.ingest_telemetry(
+                records_by_source,
+                source_type="file",
+                connector_id="file-evidence",
+                watermark=summary.watermark_after,
+            )
+        except Exception as exc:  # noqa: BLE001 — event ingest remains usable
+            summary.degraded = True
+            summary.errors.append(
+                {
+                    "stage": "evidence_projection",
+                    "error_category": "projection_failed",
+                    "detail": {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                }
+            )
+
 
 def _scenario_path(path: Path, scenario: str | None) -> Path | None:
     if scenario is None:
@@ -183,9 +225,7 @@ def _scope_file_checkpoint(
 def _synthetic_source_alert(raw_alert: dict[str, Any]) -> IngestableSource:
     encoded = orjson.dumps(raw_alert, option=orjson.OPT_SORT_KEYS)
     digest = hashlib.sha256(encoded).hexdigest()
-    occurred = datetime.fromisoformat(
-        str(raw_alert["occurred_at"]).replace("Z", "+00:00")
-    )
+    occurred = datetime.fromisoformat(str(raw_alert["occurred_at"]).replace("Z", "+00:00"))
     alert_type_raw = str(raw_alert.get("alert_type") or EventType.OTHER.value)
     try:
         event_type = EventType(alert_type_raw)

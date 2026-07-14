@@ -17,6 +17,7 @@ from app.adapters.source.base import (
     BaseSourceAdapter,
     DataQualityRecorder,
     InMemoryDataQualityRecorder,
+    SourceEvidencePage,
     SourcePage,
 )
 from app.data_generators.scenarios import SCENARIO_REGISTRY, build_scenario
@@ -125,6 +126,27 @@ class FileSourceAdapter(BaseSourceAdapter):
                 return obj
         return None
 
+    async def list_evidence_records(
+        self,
+        *,
+        updated_after: datetime | None = None,
+    ) -> SourceEvidencePage | None:
+        records = self.load_telemetry()
+        if updated_after is not None:
+            records = {
+                channel: [record for record in rows if _after_watermark(record, updated_after)]
+                for channel, rows in records.items()
+            }
+        if not any(records.values()):
+            return None
+        return SourceEvidencePage(
+            records_by_source=records,
+            source_product="file",
+            source_tenant_id=self._scenario.source_tenant_id,
+            connector_id="file-evidence",
+            schema_version="1",
+        )
+
     async def health_check(self) -> ConnectorStatus:
         return ConnectorStatus.ONLINE
 
@@ -169,3 +191,18 @@ class FileSourceAdapter(BaseSourceAdapter):
             detail={"kind": kind},
         )
         return []
+
+
+def _record_time(record: dict[str, Any]) -> datetime | None:
+    raw = record.get("logged_at")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _after_watermark(record: dict[str, Any], updated_after: datetime) -> bool:
+    observed_at = _record_time(record)
+    return observed_at is None or observed_at > updated_after

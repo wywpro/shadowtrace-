@@ -31,6 +31,7 @@ from app.models.source import (
     SourceReference,
 )
 from app.services.event_service import EventService, IngestableSource, stable_source_record_id
+from app.services.evidence_projection import EvidenceProjection
 
 logger = logging.getLogger(__name__)
 
@@ -113,11 +114,13 @@ class SourceIngester:
         *,
         source_mode: str | None = None,
         supported_schema_versions: frozenset[str] = SUPPORTED_SCHEMA_VERSIONS,
+        evidence_projection: EvidenceProjection | None = None,
     ) -> None:
         self._events = event_service
         self._session_factory = session_factory
         self._source_mode = source_mode or get_settings().source_mode
         self._supported_schema_versions = supported_schema_versions
+        self._evidence_projection = evidence_projection or EvidenceProjection(session_factory)
 
     async def poll(
         self,
@@ -265,6 +268,13 @@ class SourceIngester:
                 break
             cursor = page.next_cursor
 
+        # Evidence projection is independent of alert/object page success: a
+        # partial object_reject must not erase otherwise queryable telemetry.
+        # Projection failures degrade on their own inside the helper.
+        await self._project_adapter_evidence(
+            adapter,
+            summary=summary,
+        )
         return summary
 
     async def ingest_items(
@@ -312,6 +322,72 @@ class SourceIngester:
 
         return summary, connector_ids
 
+    async def ingest_telemetry(
+        self,
+        records_by_source: dict[str, list[dict[str, Any]]],
+        *,
+        source_type: str,
+        connector_id: str | None = None,
+        source_tenant_id: str = "local",
+        watermark: dict[str, Any] | None = None,
+    ) -> int:
+        """Project adapter-normalized telemetry through the shared evidence store."""
+        return await self._evidence_projection.ingest_records(
+            records_by_source,
+            source_product=source_type,
+            source_tenant_id=source_tenant_id,
+            connector_id=connector_id or f"{source_type}-evidence",
+            watermark=watermark,
+        )
+
+    async def _project_adapter_evidence(
+        self,
+        adapter: BaseSourceAdapter,
+        *,
+        summary: IngestionSummary,
+    ) -> None:
+        try:
+            # Evidence has its own idempotent identities. Until adapters expose
+            # a dedicated evidence watermark, replay the page rather than reuse
+            # the SourceObject watermark and risk permanently skipping a failed
+            # projection write.
+            page = await adapter.list_evidence_records(updated_after=None)
+            if page is None:
+                return
+            if page.schema_version not in self._supported_schema_versions:
+                raise ValueError(f"unsupported evidence schema_version={page.schema_version}")
+            await self._evidence_projection.ingest_records(
+                page.records_by_source,
+                source_product=page.source_product,
+                source_tenant_id=page.source_tenant_id,
+                connector_id=page.connector_id,
+                schema_version=page.schema_version,
+                watermark=summary.watermark_after,
+            )
+        except Exception as exc:  # noqa: BLE001 — project gap degrades, never fabricates
+            summary.degraded = True
+            summary.errors.append(
+                {
+                    "stage": "evidence_projection",
+                    "error_category": "projection_failed",
+                    "detail": {
+                        "adapter": adapter.name,
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                }
+            )
+            await self._record_quality(
+                stage="evidence_projection",
+                error_category="projection_failed",
+                detail={"adapter": adapter.name, "type": type(exc).__name__},
+            )
+            await self._mark_adapter_status(
+                adapter.name,
+                ConnectorStatus.DEGRADED,
+                error_category="projection_failed",
+            )
+
     async def _ingest_one(self, item: Any, *, source_type: str) -> bool:
         if isinstance(item, _EVENT_SOURCE_TYPES):
             result = await self._events.ingest_source_object(
@@ -336,6 +412,7 @@ class SourceIngester:
         ref = item.reference
         identity = source_identity(ref)
         record_id = stable_source_record_id(identity=identity)
+        projected = _supporting_projection(item)
         async with self._session_factory() as session:
             async with session.begin():
                 await self._ensure_connector_for_ref(
@@ -357,8 +434,8 @@ class SourceIngester:
                     existing.current_source_disposition = ref.source_disposition.value
                     existing.current_concurrency_token = ref.source_concurrency_token
                     existing.source_sync_state = "synced"
-                    if item.normalized:
-                        existing.normalized = item.normalized
+                    if projected:
+                        existing.normalized = projected
                     await session.flush()
                     return True
 
@@ -379,7 +456,7 @@ class SourceIngester:
                         schema_version=ref.schema_version,
                         ingested_at=ref.ingested_at or datetime.now(UTC),
                         raw_payload_hash=ref.raw_payload_hash,
-                        normalized=item.normalized,
+                        normalized=projected,
                         raw_payload=item.raw_payload,
                         current_source_status_raw=ref.source_status_raw,
                         current_source_disposition=ref.source_disposition.value,
@@ -491,14 +568,8 @@ class SourceIngester:
                         ).all()
                     )
                 if not rows:
-                    candidates = (
-                        await session.scalars(select(orm.SourceConnector))
-                    ).all()
-                    rows = [
-                        row
-                        for row in candidates
-                        if _row_matches_adapter(row, adapter_name)
-                    ]
+                    candidates = (await session.scalars(select(orm.SourceConnector))).all()
+                    rows = [row for row in candidates if _row_matches_adapter(row, adapter_name)]
                 now = datetime.now(UTC)
                 for row in rows:
                     metadata = dict(row.connector_metadata or {})
@@ -680,12 +751,33 @@ def _source_processing_order(item: Any) -> int:
     return 99
 
 
+def _supporting_projection(item: SourceAsset | SourceLog) -> dict[str, Any]:
+    """Preserve typed SourceAsset/SourceLog fields in the query projection."""
+    projected = dict(item.normalized)
+    typed = item.model_dump(
+        mode="json",
+        exclude={"reference", "raw_payload", "normalized"},
+        exclude_none=True,
+    )
+    for key, value in typed.items():
+        projected.setdefault(key, value)
+    if isinstance(item, SourceAsset):
+        projected.setdefault("channel", "asset")
+    else:
+        device_source = str(item.device_source or "").lower()
+        channel = {
+            "edr": "endpoint",
+            "iam": "identity",
+            "nfw": "network",
+            "proxy": "network",
+        }.get(device_source, device_source or "log")
+        projected.setdefault("channel", channel)
+    return projected
+
+
 def _row_matches_adapter(row: orm.SourceConnector, adapter_name: str) -> bool:
     metadata = row.connector_metadata or {}
-    return (
-        metadata.get("ingestion_adapter") == adapter_name
-        or row.source_product == adapter_name
-    )
+    return metadata.get("ingestion_adapter") == adapter_name or row.source_product == adapter_name
 
 
 def _event_type(normalized: dict[str, Any], item: SourceIncident | SourceAlert) -> EventType:

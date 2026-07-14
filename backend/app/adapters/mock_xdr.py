@@ -30,6 +30,7 @@ from app.adapters.source.base import (
     BaseSourceAdapter,
     DataQualityRecorder,
     InMemoryDataQualityRecorder,
+    SourceEvidencePage,
     SourcePage,
 )
 from app.core.errors import (
@@ -276,6 +277,18 @@ class MockXDRSourceAdapter(BaseSourceAdapter):
         if not isinstance(body, dict):
             return None
         return parse_source_item(kind, body, quality=self._quality)
+
+    async def list_evidence_records(
+        self,
+        *,
+        updated_after: datetime | None = None,
+    ) -> SourceEvidencePage | None:
+        params = {"updated_after": updated_after.isoformat()} if updated_after is not None else None
+        payload = await self._get_json("/mock-xdr/v1/evidence", params=params)
+        if not isinstance(payload, dict):
+            return None
+        page = SourceEvidencePage.model_validate(payload)
+        return page if any(page.records_by_source.values()) else None
 
     async def health_check(self) -> ConnectorStatus:
         try:
