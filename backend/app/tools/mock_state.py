@@ -11,8 +11,12 @@ from typing import Any, Self
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.redis_client import RedisClient
+from app.models.source import SourceReference
 
 MOCK_TOOL_STATE_KEY = "shadowtrace:mock_tool_state"
+MOCK_OBSERVATION_PROJECTION_KEY = "shadowtrace:mock_observation_projection"
+MOCK_VERIFY_OVERRIDE_KEY = "shadowtrace:mock_verify_override"
+_MAX_OBSERVATION_GENERATIONS = 32
 MOCK_STATE_NAMESPACES = frozenset(
     {
         "blocked_ips",
@@ -159,6 +163,31 @@ redis.call("HSET", KEYS[1], ARGV[2], encoded, ARGV[1], "applied")
 return {encoded, 1, "applied"}
 """
 
+_APPEND_OBSERVATION_LUA = """
+local existing = redis.call("HGET", KEYS[1], ARGV[1])
+local records = {}
+local generation = 1
+if existing then
+  local decoded = cjson.decode(existing)
+  if decoded["surface"] then
+    table.insert(records, decoded)
+  else
+    records = decoded
+  end
+  for _, item in ipairs(records) do
+    generation = math.max(generation, (tonumber(item["projection_generation"]) or 0) + 1)
+  end
+end
+local incoming = cjson.decode(ARGV[2])
+incoming["projection_generation"] = generation
+table.insert(records, incoming)
+while #records > tonumber(ARGV[3]) do
+  table.remove(records, 1)
+end
+redis.call("HSET", KEYS[1], ARGV[1], cjson.encode(records))
+return #records
+"""
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
@@ -182,6 +211,26 @@ class MockStateRecord(BaseModel):
     value: dict[str, Any] = Field(default_factory=dict)
 
 
+class MockObservationRecord(BaseModel):
+    """Read-only observation copied from an effect after an explicit delay."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    surface: str
+    target: str
+    status: str
+    observed_at: datetime
+    available_at: datetime
+    observed_version: int = Field(ge=1)
+    projection_generation: int = Field(default=1, ge=1)
+    source_refs: list[SourceReference] = Field(default_factory=list)
+    action_id: str
+    job_id: str
+    provider: str
+    connector: str
+    value: dict[str, Any] = Field(default_factory=dict)
+
+
 class MockEnvironmentState:
     """One logical state store, persisted under a single Redis Hash.
 
@@ -199,6 +248,8 @@ class MockEnvironmentState:
         self._redis = None if _in_memory else (redis_client or RedisClient())
         self._key = key
         self._memory: dict[str, bytes] | None = {} if _in_memory else None
+        self._observation_memory: dict[str, bytes] | None = {} if _in_memory else None
+        self._verify_override_memory: dict[str, str] | None = {} if _in_memory else None
         self._lock = asyncio.Lock()
 
     @classmethod
@@ -247,9 +298,17 @@ class MockEnvironmentState:
         if self._memory is not None:
             async with self._lock:
                 self._memory.clear()
+                assert self._observation_memory is not None
+                self._observation_memory.clear()
+                assert self._verify_override_memory is not None
+                self._verify_override_memory.clear()
             return
         assert self._redis is not None
-        await self._redis.get_client().delete(self._key)
+        await self._redis.get_client().delete(
+            self._key,
+            MOCK_OBSERVATION_PROJECTION_KEY,
+            MOCK_VERIFY_OVERRIDE_KEY,
+        )
 
     async def list_namespace(self, namespace: str) -> dict[str, Any]:
         prefix = f"{namespace}:"
@@ -270,6 +329,172 @@ class MockEnvironmentState:
 
     async def count_namespace(self, namespace: str) -> int:
         return len(await self.list_namespace(namespace))
+
+    async def set_observation(self, record: MockObservationRecord) -> None:
+        """Publish a copied observation; verification code only reads this surface."""
+
+        field = self._field(record.surface, record.target)
+        encoded_record = RedisClient.dumps(record.model_dump(mode="json"))
+        if self._observation_memory is not None:
+            async with self._lock:
+                existing = self._observation_memory.get(field)
+                decoded = RedisClient.loads(existing) if existing is not None else []
+                if isinstance(decoded, dict):
+                    records = [decoded]
+                elif isinstance(decoded, list):
+                    records = list(decoded)
+                else:
+                    records = []
+                generation = (
+                    max(
+                        (
+                            int(item.get("projection_generation", 0))
+                            for item in records
+                            if isinstance(item, dict)
+                        ),
+                        default=0,
+                    )
+                    + 1
+                )
+                records.append(
+                    record.model_copy(update={"projection_generation": generation}).model_dump(
+                        mode="json"
+                    )
+                )
+                self._observation_memory[field] = RedisClient.dumps(
+                    records[-_MAX_OBSERVATION_GENERATIONS:]
+                )
+            return
+        assert self._redis is not None
+        await self._redis.get_client().eval(
+            _APPEND_OBSERVATION_LUA,
+            1,
+            MOCK_OBSERVATION_PROJECTION_KEY,
+            field,
+            encoded_record,
+            str(_MAX_OBSERVATION_GENERATIONS),
+        )
+
+    async def get_observation(
+        self,
+        surface: str,
+        target: str,
+        *,
+        observed_at: datetime | None = None,
+        include_pending: bool = False,
+        job_id: str | None = None,
+    ) -> MockObservationRecord | None:
+        """Read a visible observation without materializing or mutating projection state."""
+
+        field = self._field(surface, target)
+        encoded: bytes | str | None
+        if self._observation_memory is not None:
+            async with self._lock:
+                encoded = self._observation_memory.get(field)
+        else:
+            assert self._redis is not None
+            encoded = await self._redis.get_client().hget(
+                MOCK_OBSERVATION_PROJECTION_KEY,
+                field,
+            )
+        value = None if encoded is None else RedisClient.loads(encoded)
+        if isinstance(value, dict):
+            raw_records = [value]
+        elif isinstance(value, list):
+            raw_records = value
+        else:
+            return None
+        records = [
+            MockObservationRecord.model_validate(item)
+            for item in raw_records
+            if isinstance(item, dict)
+        ]
+        if job_id is not None:
+            records = [record for record in records if record.job_id == job_id]
+        now = observed_at or _utc_now()
+        eligible = (
+            records
+            if include_pending
+            else [record for record in records if record.available_at <= now]
+        )
+        if not eligible:
+            return None
+        return max(
+            eligible,
+            key=lambda record: (
+                record.projection_generation,
+                record.available_at,
+                record.observed_at,
+                record.job_id,
+            ),
+        )
+
+    async def list_observations(self) -> dict[str, Any]:
+        """Return a read-only snapshot of the physically separate projection Hash."""
+
+        snapshot: dict[Any, Any]
+        if self._observation_memory is not None:
+            async with self._lock:
+                snapshot = dict(self._observation_memory)
+        else:
+            assert self._redis is not None
+            snapshot = await self._redis.get_client().hgetall(MOCK_OBSERVATION_PROJECTION_KEY)
+        return {
+            raw_field.decode() if isinstance(raw_field, bytes) else str(raw_field): (
+                RedisClient.loads(encoded)
+            )
+            for raw_field, encoded in snapshot.items()
+        }
+
+    async def set_verify_override(
+        self,
+        tool_name: str,
+        target: str,
+        value: bool | str,
+    ) -> None:
+        """Set the documented verification override Hash field."""
+
+        field = self._field(tool_name, target)
+        normalized = str(value).lower()
+        if normalized not in {"true", "false"}:
+            raise ValueError("verification override must be true or false")
+        if self._verify_override_memory is not None:
+            async with self._lock:
+                self._verify_override_memory[field] = normalized
+            return
+        assert self._redis is not None
+        await self._redis.get_client().hset(
+            MOCK_VERIFY_OVERRIDE_KEY,
+            field,
+            normalized,
+        )
+
+    async def get_verify_override(self, tool_name: str, target: str) -> bool | None:
+        field = self._field(tool_name, target)
+        raw: bytes | str | None
+        if self._verify_override_memory is not None:
+            async with self._lock:
+                raw = self._verify_override_memory.get(field)
+        else:
+            assert self._redis is not None
+            raw = await self._redis.get_client().hget(MOCK_VERIFY_OVERRIDE_KEY, field)
+        if raw is None:
+            return None
+        normalized = raw.decode() if isinstance(raw, bytes) else str(raw)
+        if normalized == "false":
+            return False
+        if normalized == "true":
+            return True
+        raise ValueError(f"invalid verification override value for {field!r}")
+
+    async def delete_verify_override(self, tool_name: str, target: str) -> None:
+        field = self._field(tool_name, target)
+        if self._verify_override_memory is not None:
+            async with self._lock:
+                self._verify_override_memory.pop(field, None)
+            return
+        assert self._redis is not None
+        await self._redis.get_client().hdel(MOCK_VERIFY_OVERRIDE_KEY, field)
 
     async def next_sequence(self, name: str) -> int:
         field = self._field("counter", name)
@@ -593,7 +818,10 @@ class MockEnvironmentState:
 
 __all__ = [
     "MOCK_STATE_NAMESPACES",
+    "MOCK_OBSERVATION_PROJECTION_KEY",
     "MOCK_TOOL_STATE_KEY",
+    "MOCK_VERIFY_OVERRIDE_KEY",
     "MockEnvironmentState",
+    "MockObservationRecord",
     "MockStateRecord",
 ]

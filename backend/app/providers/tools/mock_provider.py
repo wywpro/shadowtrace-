@@ -40,7 +40,12 @@ from app.models.tool_meta import (
 )
 from app.models.workflow import validate_job_status_transition
 from app.tools.inputs import TOOL_INPUT_MODELS
-from app.tools.mock_state import MOCK_STATE_NAMESPACES, MockEnvironmentState, MockStateRecord
+from app.tools.mock_state import (
+    MOCK_STATE_NAMESPACES,
+    MockEnvironmentState,
+    MockObservationRecord,
+    MockStateRecord,
+)
 from app.tools.specs import baseline_tool_index
 
 PROVIDER_NAME = "mock_tool_provider"
@@ -58,6 +63,30 @@ _TOOL_STATE: dict[str, tuple[str, str]] = {
     "force_logout": ("sessions", "terminated"),
     "reset_password": ("accounts", "password_reset"),
     "revoke_token": ("tokens", "revoked"),
+}
+_TOOL_OBSERVATION_SURFACE: dict[str, str] = {
+    "block_ip": "ip_blocks",
+    "block_domain": "domain_blocks",
+    "isolate_host": "host_isolation",
+    "quarantine_file": "file_quarantine",
+    "block_process": "process_blocks",
+    "scan_host_for_virus": "virus_scans",
+    "disable_account": "account_status",
+    "force_logout": "account_status",
+    "reset_password": "account_status",
+    "revoke_token": "account_status",
+}
+_REVERSED_OBSERVATION_STATUS = {
+    "blocked": "allowed",
+    "isolated": "connected",
+    "quarantined": "present",
+    "completed": "pending",
+    "disabled": "enabled",
+    "terminated": "active",
+    "password_reset": "unchanged",
+    "revoked": "active",
+    "dropped": "flowing",
+    "detected": "none",
 }
 _SYNC_TOOLS = frozenset({"create_ticket", "notify_security_team"})
 _TERMINAL_JOB_STATUSES = frozenset(
@@ -193,6 +222,10 @@ class MockToolProviderConfig(BaseModel):
     cancelled_targets: set[str] = Field(default_factory=set)
     late_success_targets: set[str] = Field(default_factory=set)
     lost_response_targets: set[str] = Field(default_factory=set)
+    observation_never_targets: set[str] = Field(default_factory=set)
+    observation_reversed_targets: set[str] = Field(default_factory=set)
+    new_alert_events: set[str] = Field(default_factory=set)
+    observation_delay_ms: int = Field(default=25, ge=0)
     poll_after_ms: int = Field(default=25, ge=0)
     job_lease_seconds: float = Field(default=30.0, gt=0)
 
@@ -724,6 +757,14 @@ class MockToolProvider:
             stored_artifact = stored.get("value", {}).get("artifact_id")
             if isinstance(stored_artifact, str):
                 artifact_id = stored_artifact
+            await self._copy_effect_to_observation(
+                tool_name,
+                target_type,
+                target,
+                stored,
+                job,
+                context,
+            )
         return self._target_result(
             target_type,
             target,
@@ -731,6 +772,75 @@ class MockToolProvider:
             code,
             artifact_id=artifact_id,
         )
+
+    async def _copy_effect_to_observation(
+        self,
+        tool_name: str,
+        target_type: str,
+        target: str,
+        stored: dict[str, Any],
+        job: ActionExecutionJob,
+        context: ToolExecutionContext,
+    ) -> None:
+        """Schedule independent observation records without exposing effect namespaces."""
+
+        configured_target = [(target_type, target)]
+        never_visible = self._matches_any(
+            self.config.observation_never_targets,
+            configured_target,
+        )
+        reverse = self._matches_any(
+            self.config.observation_reversed_targets,
+            configured_target,
+        )
+        now = _utc_now()
+        available_at = now + timedelta(milliseconds=self.config.observation_delay_ms)
+        status = str(stored.get("status") or "")
+        if reverse:
+            status = _REVERSED_OBSERVATION_STATUS.get(status, f"not_{status}")
+        common: dict[str, Any] = {
+            "observed_at": available_at,
+            "available_at": available_at,
+            "observed_version": int(stored.get("version", 1)),
+            "action_id": str(stored.get("action_id") or context.action_id),
+            "job_id": str(stored.get("job_id") or job.job_id),
+            "provider": str(stored.get("provider") or self.name),
+            "connector": str(stored.get("connector") or context.connector),
+            "value": dict(stored.get("value") or {}),
+        }
+        if not never_visible:
+            await self.state.set_observation(
+                MockObservationRecord(
+                    surface=_TOOL_OBSERVATION_SURFACE[tool_name],
+                    target=target,
+                    status=status,
+                    **common,
+                )
+            )
+        if not never_visible and tool_name in {"block_ip", "isolate_host"}:
+            traffic_status = "flowing" if reverse else "dropped"
+            await self.state.set_observation(
+                MockObservationRecord(
+                    surface="traffic",
+                    target=target,
+                    status=traffic_status,
+                    **common,
+                )
+            )
+        if context.event_id in self.config.new_alert_events:
+            alert_status = _REVERSED_OBSERVATION_STATUS["detected"] if reverse else "detected"
+            await self.state.set_observation(
+                MockObservationRecord(
+                    surface="new_alerts",
+                    target=context.event_id,
+                    status=alert_status,
+                    **{
+                        **common,
+                        "action_id": context.action_id,
+                        "job_id": job.job_id,
+                    },
+                )
+            )
 
     async def _create_ticket(
         self,
