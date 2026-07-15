@@ -90,7 +90,14 @@ def parse_source_item(
 
     payload = dict(body)
     mock_meta = payload.pop("_mock", None)
+    unknown_fields = sorted(set(payload) - set(model.model_fields))
     # Preserve opaque external identity; fold unknown extras into raw_payload.
+    extras = {key: payload.pop(key) for key in unknown_fields}
+    if extras:
+        existing_raw = payload.get("raw_payload")
+        raw_payload = dict(existing_raw) if isinstance(existing_raw, dict) else {}
+        raw_payload.update(extras)
+        payload["raw_payload"] = raw_payload
     try:
         item = model.model_validate(payload)
     except ValidationError as exc:

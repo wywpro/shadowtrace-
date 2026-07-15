@@ -13,6 +13,7 @@ import pytest
 from app.data_generators.base import TELEMETRY_FILENAMES
 from app.data_generators.scenarios import (
     SCENARIO_REGISTRY,
+    SCENARIO_VARIANTS,
     build_scenario,
     telemetry_for_scenario,
     write_scenario_artifacts,
@@ -27,7 +28,8 @@ from app.data_generators.scenarios.insider_data_exfiltration import (
     PROC_7Z,
     PROC_PS,
 )
-from app.mock_xdr.models import MockXDRScenario
+from app.mock_xdr.models import MockXDRScenario, ScenarioVariant
+from app.mock_xdr.state import MockXDRState
 from app.models.enums import FinalVerdict, Severity
 
 SCENARIO_IDS = (
@@ -47,6 +49,7 @@ _UUID_RE = re.compile(
 def test_registry_contains_three_scenarios(scenario_id: str) -> None:
     assert scenario_id in SCENARIO_REGISTRY
     assert set(SCENARIO_REGISTRY) == set(SCENARIO_IDS)
+    assert SCENARIO_REGISTRY[scenario_id].variant is ScenarioVariant.NORMAL
 
 
 @pytest.mark.parametrize("scenario_id", SCENARIO_IDS)
@@ -130,25 +133,75 @@ def test_suspicious_domain_access_outcome_and_risk_band() -> None:
 
 
 @pytest.mark.parametrize("scenario_id", SCENARIO_IDS)
-def test_variants_and_mock_provider_error(scenario_id: str) -> None:
-    scenario = build_scenario(scenario_id, seed=42)
-    variants = set(scenario.expected_outcome.get("variants", []))
-    for required in (
-        "agent_not_installed",
-        "device_offline",
-        "capability_gap",
-        "partial_success",
-        "capacity_limit_exceeded",
-    ):
-        assert required in variants
-    assert scenario.expected_outcome.get("provider_error_codes") == ["capacity_limit_exceeded"]
-    assert scenario.failure_profile.force_partial_targets is True
-    assert any(a.agent_status == "not_installed" for a in scenario.assets)
-    assert any(a.agent_status == "offline" for a in scenario.assets)
-    assert any(c.metadata.get("role") == "capability_gap" for c in scenario.connectors)
-    # No screenshot-style vendor UI strings unless marked simulated_ui_observation.
+@pytest.mark.parametrize("variant", SCENARIO_VARIANTS)
+def test_normal_and_degraded_variants_execute_independently(
+    scenario_id: str,
+    variant: str,
+) -> None:
+    selected = ScenarioVariant(variant)
+    scenario = build_scenario(scenario_id, seed=42, variant=selected)
+    state = MockXDRState()
+    state.load_scenario(scenario)
+
+    assert scenario.variant is selected
+    assert scenario.expected_outcome["active_variant"] == selected.value
+    assert set(scenario.expected_outcome["variants"]) == set(SCENARIO_VARIANTS)
+    assert bool([asset for asset in scenario.assets if asset.agent_status == "not_installed"]) is (
+        selected is ScenarioVariant.AGENT_NOT_INSTALLED
+    )
+    assert bool([asset for asset in scenario.assets if asset.agent_status == "offline"]) is (
+        selected is ScenarioVariant.DEVICE_OFFLINE
+    )
+    assert bool(
+        [
+            connector
+            for connector in scenario.connectors
+            if connector.metadata.get("role") == "capability_gap"
+        ]
+    ) is (selected is ScenarioVariant.CAPABILITY_GAP)
+    assert scenario.failure_profile.force_partial_targets is (
+        selected is ScenarioVariant.PARTIAL_SUCCESS
+    )
+    assert scenario.failure_profile.rate_limit_every_n == (
+        1 if selected is ScenarioVariant.RATE_LIMIT else None
+    )
+    assert scenario.failure_profile.timeout_every_n == (
+        1 if selected is ScenarioVariant.TIMEOUT else None
+    )
+    assert scenario.failure_profile.malformed_payload_every_n == (
+        1 if selected is ScenarioVariant.MALFORMED_PAYLOAD else None
+    )
+    provider_rows = [
+        row
+        for row in scenario.telemetry_timeline
+        if row.get("provider_error_code") == "capacity_limit_exceeded"
+    ]
+    assert bool(provider_rows) is (selected is ScenarioVariant.CAPACITY_LIMIT_EXCEEDED)
+    assert scenario.expected_outcome["provider_error_codes"] == (
+        ["capacity_limit_exceeded"] if selected is ScenarioVariant.CAPACITY_LIMIT_EXCEEDED else []
+    )
+    assert state.scenario is scenario
     blob = json.dumps(scenario.model_dump(mode="json"), ensure_ascii=False)
     assert "黑名单总数超出" not in blob
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload["alerts"][0]["reference"].update(
+            {"connector_id": "missing-connector"}
+        ),
+        lambda payload: payload["alerts"][0]["reference"].update({"source_kind": "asset"}),
+        lambda payload: payload["incidents"].append(payload["incidents"][0]),
+    ],
+)
+def test_scenario_semantic_reference_validation_rejects_invalid_structures(
+    mutate,
+) -> None:
+    payload = build_scenario("insider_data_exfiltration", seed=42).model_dump(mode="json")
+    mutate(payload)
+    with pytest.raises(ValueError):
+        MockXDRScenario.model_validate(payload)
 
 
 def test_opaque_external_id_shapes_across_fixtures() -> None:

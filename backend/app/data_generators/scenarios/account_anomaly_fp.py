@@ -8,13 +8,17 @@ from typing import Any
 from app.data_generators.scenarios._common import (
     DEFAULT_BASE_TIME,
     DEFAULT_TENANT,
+    SCENARIO_VARIANTS,
     capability_gap_connector,
     disposition_connector,
     event,
+    failure_profile_for_variant,
     log_only_connector,
     make_ref,
+    normalize_variant,
+    telemetry_for_variant,
 )
-from app.mock_xdr.models import MockFailureProfile, MockXDRScenario
+from app.mock_xdr.models import MockXDRScenario, ScenarioVariant
 from app.models.enums import DispositionPolicy, SourceObjectKind
 from app.models.source import SourceAlert, SourceAsset, SourceIncident, SourceLog
 
@@ -29,7 +33,12 @@ ASSET_ID = "7001"
 LOG_ID = "xdr_log_ops_bulk_login_change_window_001"
 
 
-def build_account_anomaly_fp(*, seed: int = 42) -> MockXDRScenario:
+def build_account_anomaly_fp(
+    *,
+    seed: int = 42,
+    variant: ScenarioVariant | str = ScenarioVariant.NORMAL,
+) -> MockXDRScenario:
+    selected_variant = normalize_variant(variant)
     base = DEFAULT_BASE_TIME
     tenant = DEFAULT_TENANT
     conn_log = log_only_connector(connector_id="conn-log-fp")
@@ -71,22 +80,28 @@ def build_account_anomaly_fp(*, seed: int = 42) -> MockXDRScenario:
             agent_status="online",
             asset_group="ops",
             normalized={"change_window": True},
-        ),
-        SourceAsset(
-            reference=asset_no_agent,
-            numeric_asset_id="7002",
-            hostname="PC-OPS-LEGACY",
-            agent_status="not_installed",
-            normalized={"variant": "agent_not_installed"},
-        ),
-        SourceAsset(
-            reference=asset_offline,
-            numeric_asset_id="7003",
-            hostname="PC-OPS-DR",
-            agent_status="offline",
-            normalized={"variant": "device_offline"},
-        ),
+        )
     ]
+    if selected_variant is ScenarioVariant.AGENT_NOT_INSTALLED:
+        assets.append(
+            SourceAsset(
+                reference=asset_no_agent,
+                numeric_asset_id="7002",
+                hostname="PC-OPS-LEGACY",
+                agent_status="not_installed",
+                normalized={"variant": "agent_not_installed"},
+            )
+        )
+    if selected_variant is ScenarioVariant.DEVICE_OFFLINE:
+        assets.append(
+            SourceAsset(
+                reference=asset_offline,
+                numeric_asset_id="7003",
+                hostname="PC-OPS-DR",
+                agent_status="offline",
+                normalized={"variant": "device_offline"},
+            )
+        )
 
     log_ref = make_ref(
         SourceObjectKind.LOG,
@@ -142,23 +157,32 @@ def build_account_anomaly_fp(*, seed: int = 42) -> MockXDRScenario:
         normalized={"risk_score": 18, "fp_rule_match": True},
     )
 
-    timeline = _build_timeline(base=base, seed=seed)
+    timeline = telemetry_for_variant(
+        _build_timeline(base=base, seed=seed),
+        variant=selected_variant,
+    )
 
     return MockXDRScenario(
         scenario_id=SCENARIO_ID,
-        name="Account anomaly false positive (change-window bulk login)",
+        name=(
+            f"Account anomaly false positive (change-window bulk login) [{selected_variant.value}]"
+        ),
+        variant=selected_variant,
         base_time=base,
         source_tenant_id=tenant,
         incidents=[incident],
         alerts=[alert],
         assets=assets,
         logs=logs,
-        connectors=[conn_log, conn_disp, conn_gap],
+        connectors=[
+            conn_log,
+            conn_disp,
+            *([conn_gap] if selected_variant is ScenarioVariant.CAPABILITY_GAP else []),
+        ],
         telemetry_timeline=timeline,
-        failure_profile=MockFailureProfile(
+        failure_profile=failure_profile_for_variant(
             seed=seed,
-            force_partial_targets=True,
-            control_plane_enabled=True,
+            variant=selected_variant,
         ),
         expected_outcome={
             "expected_verdict": "false_positive",
@@ -166,14 +190,13 @@ def build_account_anomaly_fp(*, seed: int = 42) -> MockXDRScenario:
             "risk_score": 18,
             "disposition_policy": "not_required",
             "fp_rule": "ops_change_window_bulk_login",
-            "variants": [
-                "agent_not_installed",
-                "device_offline",
-                "capability_gap",
-                "partial_success",
-                "capacity_limit_exceeded",
-            ],
-            "provider_error_codes": ["capacity_limit_exceeded"],
+            "active_variant": selected_variant.value,
+            "variants": list(SCENARIO_VARIANTS),
+            "provider_error_codes": (
+                ["capacity_limit_exceeded"]
+                if selected_variant is ScenarioVariant.CAPACITY_LIMIT_EXCEEDED
+                else []
+            ),
         },
     )
 

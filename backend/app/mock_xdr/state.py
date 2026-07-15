@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import secrets
@@ -182,6 +183,7 @@ class StoredObject:
 class CursorPage:
     cursor: str
     object_ids: list[str]
+    frozen_items: list[dict[str, Any]]
     kind: ObjectKindName
     updated_after: datetime | None
     page_size: int
@@ -228,6 +230,7 @@ class MockXDRState:
     connector_health_ok: dict[str, bool] = field(default_factory=dict)
     # cursor -> frozen page
     cursor_pages: dict[str, CursorPage] = field(default_factory=dict)
+    pending_ticks: list[ScenarioTick] = field(default_factory=list)
     # kind -> watermark (last successfully committed cursor)
     watermarks: dict[ObjectKindName, str | None] = field(default_factory=dict)
     disposition_by_id: dict[str, DispositionAttempt] = field(default_factory=dict)
@@ -266,8 +269,11 @@ class MockXDRState:
             self._put_model("asset", asset.reference.source_object_id, asset)
         for log in scenario.logs:
             self._put_model("log", log.reference.source_object_id, log)
-        for tick in sorted(scenario.ticks, key=lambda t: t.offset_seconds):
-            self.apply_tick(tick)
+        self.pending_ticks = sorted(
+            (tick.model_copy(deep=True) for tick in scenario.ticks),
+            key=lambda tick: tick.offset_seconds,
+        )
+        self._apply_due_ticks()
 
     def reset(self) -> None:
         self.scenario = None
@@ -278,6 +284,7 @@ class MockXDRState:
         self.connectors.clear()
         self.connector_health_ok.clear()
         self.cursor_pages.clear()
+        self.pending_ticks.clear()
         self.watermarks.clear()
         self.disposition_by_id.clear()
         self.disposition_by_idem_hash.clear()
@@ -287,8 +294,29 @@ class MockXDRState:
         self.captured_requests.clear()
 
     def advance_clock(self, seconds: float) -> datetime:
+        if seconds < 0:
+            raise MockValidationError(
+                "virtual clock cannot move backwards",
+                error_code="invalid_operation",
+            )
         self.clock = self.clock + timedelta(seconds=seconds)
+        self._apply_due_ticks()
         return self.clock
+
+    def _apply_due_ticks(self) -> None:
+        if self.scenario is None:
+            return
+        base_time = (
+            self.scenario.base_time
+            if self.scenario.base_time.tzinfo
+            else self.scenario.base_time.replace(tzinfo=UTC)
+        )
+        elapsed_seconds = (self.clock - base_time).total_seconds()
+        applied_offsets: list[int] = []
+        while self.pending_ticks and self.pending_ticks[0].offset_seconds <= elapsed_seconds:
+            tick = self.pending_ticks.pop(0)
+            self.apply_tick(tick)
+            applied_offsets.append(tick.offset_seconds)
 
     # --------------------------------------------------------------- storage
 
@@ -354,7 +382,6 @@ class MockXDRState:
         existing.payload_hash = payload_hash({"deleted": True, "id": object_id})
 
     def apply_tick(self, tick: ScenarioTick) -> None:
-        self.advance_clock(0)  # clock already absolute via offset in seeders
         kind = tick.object_type
         if kind not in ("incident", "alert", "asset", "log", "connector"):
             raise MockValidationError(f"unknown object_type {tick.object_type}")
@@ -479,14 +506,8 @@ class MockXDRState:
             page = self.cursor_pages.get(cursor)
             if page is None:
                 raise MockValidationError("unknown cursor", error_code="invalid_cursor")
-            # Idempotent retry: same cursor → same page
-            items = [
-                self._public_object(kind, oid)
-                for oid in page.object_ids
-                if (kind, oid) in self.objects and not self.objects[(kind, oid)].deleted
-            ]
-            if self.failure_profile.duplicate_page and items:
-                items = items + items[:1]
+            # Idempotent retry: same cursor → same immutable payload snapshot.
+            items = copy.deepcopy(page.frozen_items)
             next_cursor = None
             # Find continuation from watermark chain stored alongside
             next_key = f"{cursor}::next"
@@ -503,6 +524,9 @@ class MockXDRState:
             }
 
         ids = self._sorted_ids(kind, updated_after=updated_after)
+        snapshot_fingerprint = "|".join(
+            f"{oid}:{self.objects[(kind, oid)].payload_hash}" for oid in ids
+        )
         pages: list[list[str]] = [
             ids[i : i + page_size] for i in range(0, max(len(ids), 1), page_size)
         ] or [[]]
@@ -510,12 +534,19 @@ class MockXDRState:
         cursors: list[str] = []
         for idx, chunk in enumerate(pages):
             after = updated_after.isoformat() if updated_after else ""
-            material = f"{kind}|{after}|{idx}|{page_size}|{self.failure_profile.seed}"
+            material = (
+                f"{kind}|{after}|{idx}|{page_size}|{self.failure_profile.seed}"
+                f"|{snapshot_fingerprint}"
+            )
             c = hashlib.sha256(material.encode()).hexdigest()[:24]
             cursors.append(c)
+            frozen_items = [copy.deepcopy(self._public_object(kind, oid)) for oid in chunk]
+            if self.failure_profile.duplicate_page and frozen_items:
+                frozen_items.append(copy.deepcopy(frozen_items[0]))
             self.cursor_pages[c] = CursorPage(
                 cursor=c,
                 object_ids=list(chunk),
+                frozen_items=frozen_items,
                 kind=kind,
                 updated_after=updated_after,
                 page_size=page_size,
@@ -524,11 +555,7 @@ class MockXDRState:
             self.cursor_pages[f"{cursors[idx]}::next"] = self.cursor_pages[cursors[idx + 1]]
 
         first = cursors[0]
-        items = [
-            self._public_object(kind, oid)
-            for oid in self.cursor_pages[first].object_ids
-            if (kind, oid) in self.objects and not self.objects[(kind, oid)].deleted
-        ]
+        items = copy.deepcopy(self.cursor_pages[first].frozen_items)
         next_cursor = cursors[1] if len(cursors) > 1 else None
         if commit_watermark:
             self.watermarks[kind] = first
@@ -541,7 +568,7 @@ class MockXDRState:
 
     def _public_object(self, kind: ObjectKindName, object_id: str) -> dict[str, Any]:
         stored = self.objects[(kind, object_id)]
-        body = dict(stored.body)
+        body = copy.deepcopy(stored.body)
         # Preserve external IDs as opaque strings; never rewrite.
         body["_mock"] = {
             "source_updated_at": stored.source_updated_at.isoformat(),
@@ -592,7 +619,12 @@ class MockXDRState:
                     "idempotency key reused with a different payload",
                     error_code="idempotency_key_reuse",
                 )
-            return attempt.receipts[-1]
+            return attempt.receipts[-1].model_copy(deep=True)
+        if command.disposition_id in self.disposition_by_id:
+            raise MockValidationError(
+                "disposition_id reused for a different attempt",
+                error_code="disposition_id_reuse",
+            )
 
         locator = command.source_locator
         kind_value = locator.source_kind.value
@@ -629,9 +661,9 @@ class MockXDRState:
                 simulated=True,
             )
             attempt = DispositionAttempt(
-                command=command,
+                command=command.model_copy(deep=True),
                 writeback_id=writeback_id,
-                receipts=[receipt],
+                receipts=[receipt.model_copy(deep=True)],
                 active=False,
                 source_record_id=receipt.source_record_id,
                 command_payload_hash=command_payload_hash,
@@ -677,7 +709,7 @@ class MockXDRState:
         provider_job_id: str | None = None
         confirmed_at: datetime | None = None
 
-        if self.failure_profile.force_partial_targets and command.target_results:
+        if self.failure_profile.force_partial_targets and len(command.target_results) >= 2:
             for i, t in enumerate(command.target_results):
                 tw = TargetWritebackStatus.CONFIRMED if i == 0 else TargetWritebackStatus.FAILED
                 target_results.append(
@@ -726,9 +758,9 @@ class MockXDRState:
             simulated=True,
         )
         attempt = DispositionAttempt(
-            command=command,
+            command=command.model_copy(deep=True),
             writeback_id=writeback_id,
-            receipts=[receipt],
+            receipts=[receipt.model_copy(deep=True)],
             active=True,
             provider_job_id=provider_job_id,
             source_record_id=source_record_id,
@@ -794,25 +826,73 @@ class MockXDRState:
                 f"cannot confirm from status {latest.status.value}",
                 error_code="invalid_state_transition",
             )
-        self._apply_confirmed_source_disposition(attempt.command)
+        locator = attempt.command.source_locator
+        kind_value = locator.source_kind.value
+        stored: StoredObject | None = None
+        if kind_value in ("incident", "alert", "asset", "log"):
+            kind: ObjectKindName = kind_value  # type: ignore[assignment]
+            stored = self.objects.get((kind, locator.source_object_id))
+        target_disposition = getattr(attempt.command.operation_params, "target_disposition", None)
+        observed_disposition = None
+        observed_token = None
+        if stored is not None:
+            observed_disposition = (stored.body.get("reference") or {}).get("source_disposition")
+            observed_token = stored.concurrency_token
         seq = latest.sequence + 1
-        receipt = latest.model_copy(
-            update={
-                "sequence": seq,
-                "status": WritebackStatus.CONFIRMED,
-                "confirmation_evidence": ConfirmationEvidence.READBACK_VERIFIED,
-                "confirmed_at": self.clock,
-                "observed_at": self.clock,
-            }
+        target_matches = (
+            target_disposition is not None and observed_disposition == target_disposition.value
         )
-        attempt.receipts.append(receipt)
+        token_changed = (
+            attempt.command.source_concurrency_token is None
+            or observed_token != attempt.command.source_concurrency_token
+        )
+        if target_matches and token_changed:
+            receipt = latest.model_copy(
+                update={
+                    "sequence": seq,
+                    "status": WritebackStatus.CONFIRMED,
+                    "confirmation_evidence": ConfirmationEvidence.READBACK_VERIFIED,
+                    "provider_code": None,
+                    "provider_message": None,
+                    "confirmed_at": self.clock,
+                    "observed_at": self.clock,
+                }
+            )
+        else:
+            authoritative_changed = (
+                attempt.command.source_concurrency_token is not None
+                and observed_token is not None
+                and observed_token != attempt.command.source_concurrency_token
+            )
+            receipt = latest.model_copy(
+                update={
+                    "sequence": seq,
+                    "status": (
+                        WritebackStatus.CONFLICT
+                        if authoritative_changed
+                        else WritebackStatus.UNKNOWN
+                    ),
+                    "confirmation_evidence": None,
+                    "provider_code": (
+                        "readback_mismatch" if authoritative_changed else "readback_not_yet_applied"
+                    ),
+                    "provider_message": (
+                        "authoritative state changed to a different disposition"
+                        if authoritative_changed
+                        else "authoritative state has not proved the requested disposition"
+                    ),
+                    "confirmed_at": None,
+                    "observed_at": self.clock,
+                }
+            )
+        attempt.receipts.append(receipt.model_copy(deep=True))
         return receipt
 
     def lookup_by_idempotency(self, key_hash: str) -> DispositionReceipt | None:
         disp_id = self.disposition_by_idem_hash.get(key_hash)
         if disp_id is None:
             return None
-        return self.disposition_by_id[disp_id].receipts[-1]
+        return self.disposition_by_id[disp_id].receipts[-1].model_copy(deep=True)
 
     def get_job(self, provider_job_id: str) -> ProviderJob:
         job = self.jobs.get(provider_job_id)

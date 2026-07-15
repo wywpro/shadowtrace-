@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.data_generators.base import TELEMETRY_FILENAMES, offset_time
+from app.mock_xdr.models import MockFailureProfile, ScenarioVariant
 from app.models.enums import (
     CapabilityState,
     ConnectorCapability,
@@ -19,6 +20,36 @@ from app.models.source import SourceConnector, SourceReference
 PRODUCT = "mock_xdr"
 DEFAULT_TENANT = "tenant-demo"
 DEFAULT_BASE_TIME = datetime(2024, 6, 15, 9, 0, 0, tzinfo=UTC)
+SCENARIO_VARIANTS: tuple[str, ...] = tuple(variant.value for variant in ScenarioVariant)
+
+
+def normalize_variant(variant: ScenarioVariant | str) -> ScenarioVariant:
+    return variant if isinstance(variant, ScenarioVariant) else ScenarioVariant(variant)
+
+
+def failure_profile_for_variant(
+    *,
+    seed: int,
+    variant: ScenarioVariant,
+) -> MockFailureProfile:
+    return MockFailureProfile(
+        seed=seed,
+        force_partial_targets=variant is ScenarioVariant.PARTIAL_SUCCESS,
+        rate_limit_every_n=1 if variant is ScenarioVariant.RATE_LIMIT else None,
+        timeout_every_n=1 if variant is ScenarioVariant.TIMEOUT else None,
+        malformed_payload_every_n=(1 if variant is ScenarioVariant.MALFORMED_PAYLOAD else None),
+        control_plane_enabled=True,
+    )
+
+
+def telemetry_for_variant(
+    timeline: list[dict[str, Any]],
+    *,
+    variant: ScenarioVariant,
+) -> list[dict[str, Any]]:
+    return [
+        row for row in timeline if row.get("variant") is None or row.get("variant") == variant.value
+    ]
 
 
 def make_ref(

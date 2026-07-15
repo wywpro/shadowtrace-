@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from app.data_generators.base import TELEMETRY_FILENAMES
-from app.data_generators.scenarios._common import split_telemetry_by_channel
+from app.data_generators.scenarios._common import (
+    SCENARIO_VARIANTS,
+    normalize_variant,
+    split_telemetry_by_channel,
+)
 from app.data_generators.scenarios.account_anomaly_fp import (
     SCENARIO_ID as ACCOUNT_ANOMALY_FP_ID,
 )
@@ -29,7 +33,7 @@ from app.data_generators.scenarios.suspicious_domain_access import (
 from app.data_generators.scenarios.suspicious_domain_access import (
     build_suspicious_domain_access,
 )
-from app.mock_xdr.models import MockXDRScenario
+from app.mock_xdr.models import MockXDRScenario, ScenarioVariant
 
 SCENARIO_BUILDERS: dict[str, Callable[..., MockXDRScenario]] = {
     INSIDER_ID: build_insider_data_exfiltration,
@@ -38,13 +42,19 @@ SCENARIO_BUILDERS: dict[str, Callable[..., MockXDRScenario]] = {
 }
 
 
-def build_scenario(scenario_id: str, *, seed: int = 42) -> MockXDRScenario:
+def build_scenario(
+    scenario_id: str,
+    *,
+    seed: int = 42,
+    variant: ScenarioVariant | str = ScenarioVariant.NORMAL,
+) -> MockXDRScenario:
     try:
         builder = SCENARIO_BUILDERS[scenario_id]
     except KeyError as exc:
         known = ", ".join(sorted(SCENARIO_BUILDERS))
         raise KeyError(f"unknown scenario {scenario_id!r}; known: {known}") from exc
-    return builder(seed=seed)
+    scenario = builder(seed=seed, variant=normalize_variant(variant))
+    return scenario
 
 
 # Spec: SCENARIO_REGISTRY: dict[str, MockXDRScenario]
@@ -91,6 +101,7 @@ def write_scenario_artifacts(
 __all__ = [
     "SCENARIO_BUILDERS",
     "SCENARIO_REGISTRY",
+    "SCENARIO_VARIANTS",
     "build_scenario",
     "telemetry_for_scenario",
     "write_scenario_artifacts",

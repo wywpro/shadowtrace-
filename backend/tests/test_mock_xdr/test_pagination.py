@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
+from app.data_generators.scenarios import build_scenario
+from app.data_generators.scenarios.insider_data_exfiltration import ALERT_DLP_ID
 from app.mock_xdr.models import MockFailureProfile, MockXDRScenario
 from app.mock_xdr.state import MockXDRState
 from app.models.enums import (
@@ -93,3 +97,50 @@ def test_watermark_only_advances_on_commit(state: MockXDRState) -> None:
     assert state.watermarks.get("incident") is None
     state.list_page("incident", page_size=10, cursor=page["cursor"], commit_watermark=True)
     assert state.watermarks.get("incident") == page["cursor"]
+
+
+@pytest.mark.parametrize("page_size", [1, 2, 7])
+def test_cursor_freezes_payloads_across_updates_and_deletes(page_size: int) -> None:
+    state = MockXDRState()
+    state.load_scenario(_bulk_incident_scenario(10))
+    page = state.list_page("incident", page_size=page_size)
+    frozen = page["items"]
+    frozen_ids = [item["_mock"]["external_id"] for item in frozen]
+
+    state.advance_clock(1)
+    first_id = frozen_ids[0]
+    updated = dict(state.objects[("incident", first_id)].body)
+    updated["title"] = "changed-after-snapshot"
+    state.upsert_object("incident", first_id, updated)
+    if len(frozen_ids) > 1:
+        state.delete_object("incident", frozen_ids[-1])
+
+    retried = state.list_page("incident", cursor=page["cursor"], page_size=page_size)
+    assert retried["items"] == frozen
+
+    fresh = state.list_page("incident", page_size=page_size)
+    assert fresh["cursor"] != page["cursor"]
+    assert fresh["items"] != frozen
+
+
+def test_future_ticks_apply_only_when_virtual_clock_reaches_offset() -> None:
+    scenario = build_scenario("insider_data_exfiltration", seed=7)
+    state = MockXDRState()
+    state.load_scenario(scenario)
+
+    assert state.clock == scenario.base_time
+    assert state.get_object("alert", ALERT_DLP_ID)["reference"]["source_status_raw"] == "open"
+    assert state.connectors["conn-disposition"].status is ConnectorStatus.ONLINE
+
+    state.advance_clock(3_599)
+    assert state.get_object("alert", ALERT_DLP_ID)["reference"]["source_status_raw"] == "open"
+    state.advance_clock(1)
+    assert (
+        state.get_object("alert", ALERT_DLP_ID)["reference"]["source_status_raw"] == "in_progress"
+    )
+
+    state.advance_clock(3_599)
+    assert state.connectors["conn-disposition"].status is ConnectorStatus.ONLINE
+    state.advance_clock(1)
+    assert state.connectors["conn-disposition"].status is ConnectorStatus.DEGRADED
+    assert state.pending_ticks == []

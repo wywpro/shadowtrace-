@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -18,8 +19,13 @@ from app.adapters.mock_xdr import (
 from app.adapters.normalizers import CHANNEL_NORMALIZERS, normalize_record
 from app.adapters.registry import DispositionAdapterRegistry, SourceAdapterRegistry
 from app.adapters.source.base import BaseSourceAdapter, InMemoryDataQualityRecorder
-from app.core.errors import AdapterNotFoundError, WritebackUnsupportedError
+from app.core.errors import (
+    AdapterNotFoundError,
+    DependencyUnavailableError,
+    WritebackUnsupportedError,
+)
 from app.data_generators.scenarios import build_scenario
+from app.mock_xdr.models import MockFailureProfile
 from app.mock_xdr.state import MockXDRState
 from app.models.enums import (
     CapabilityState,
@@ -182,6 +188,139 @@ async def test_lost_response_returns_unknown_then_lookup(
     # Lookup recovers the prior acceptance — never re-executes entity action.
     assert lost.writeback_id == accepted.writeback_id
     assert lost.status == accepted.status
+
+
+@pytest.mark.asyncio
+async def test_submit_and_lookup_transport_failures_return_unknown(
+    mock_state: MockXDRState,
+) -> None:
+    async def fail_transport(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("deterministic transport failure", request=request)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(fail_transport),
+        base_url="http://mock-xdr",
+    ) as client:
+        adapter = MockXDRDispositionAdapter(
+            read_token=mock_state.read_token,
+            write_token=mock_state.write_token,
+            client=client,
+        )
+        stored = mock_state.objects[("incident", "88442201")]
+        command = event_disposition_command(
+            token=stored.concurrency_token,
+            idempotency_key="idem-double-transport",
+            disposition_id="disp-double-transport",
+        )
+        receipt = await adapter.submit(command)
+
+    assert receipt.status is WritebackStatus.UNKNOWN
+    assert receipt.confirmation_evidence is None
+    assert receipt.provider_code == "unknown_delivery"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("future_vendor_field", {"revision": 2}),
+        ("new_scalar", "opaque"),
+        ("new_collection", [1, 2, 3]),
+    ],
+)
+async def test_unknown_source_fields_are_folded_into_raw_payload(
+    mock_client: httpx.AsyncClient,
+    mock_state: MockXDRState,
+    field_name: str,
+    field_value: Any,
+) -> None:
+    stored = mock_state.objects[("incident", "88442201")]
+    body = dict(stored.body)
+    body[field_name] = field_value
+    mock_state.upsert_object("incident", "88442201", body)
+    adapter = MockXDRSourceAdapter(
+        read_token=mock_state.read_token,
+        write_token=mock_state.write_token,
+        client=mock_client,
+    )
+
+    item = await adapter.get_object(SourceObjectKind.INCIDENT, "88442201")
+
+    assert isinstance(item, SourceIncident)
+    assert item.title
+    assert item.raw_payload[field_name] == field_value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile", "expected_code"),
+    [
+        (MockFailureProfile(rate_limit_every_n=1), "rate_limited"),
+        (MockFailureProfile(timeout_every_n=1), "timeout"),
+    ],
+)
+async def test_source_fault_profiles_have_deterministic_errors(
+    mock_client: httpx.AsyncClient,
+    mock_state: MockXDRState,
+    profile: MockFailureProfile,
+    expected_code: str,
+) -> None:
+    mock_state.failure_profile = profile
+    adapter = MockXDRSourceAdapter(
+        read_token=mock_state.read_token,
+        write_token=mock_state.write_token,
+        client=mock_client,
+        max_retries=0,
+    )
+    with pytest.raises(DependencyUnavailableError) as exc_info:
+        await adapter.list_objects([SourceObjectKind.INCIDENT])
+    assert exc_info.value.error_code == expected_code
+
+
+@pytest.mark.asyncio
+async def test_malformed_source_payload_marks_adapter_degraded(
+    mock_client: httpx.AsyncClient,
+    mock_state: MockXDRState,
+) -> None:
+    mock_state.failure_profile = MockFailureProfile(malformed_payload_every_n=1)
+    quality = InMemoryDataQualityRecorder()
+    adapter = MockXDRSourceAdapter(
+        read_token=mock_state.read_token,
+        write_token=mock_state.write_token,
+        client=mock_client,
+        quality=quality,
+        max_retries=0,
+    )
+
+    page = await adapter.list_objects([SourceObjectKind.INCIDENT])
+
+    assert page.items == []
+    assert any(row["error_category"] == "malformed_payload" for row in quality.rows)
+    assert await adapter.health_check() is ConnectorStatus.DEGRADED
+
+
+@pytest.mark.asyncio
+async def test_malformed_submit_and_lookup_payloads_return_unknown(
+    mock_client: httpx.AsyncClient,
+    mock_state: MockXDRState,
+) -> None:
+    mock_state.failure_profile = MockFailureProfile(malformed_payload_every_n=1)
+    adapter = MockXDRDispositionAdapter(
+        read_token=mock_state.read_token,
+        write_token=mock_state.write_token,
+        client=mock_client,
+    )
+    stored = mock_state.objects[("incident", "88442201")]
+    command = event_disposition_command(
+        token=stored.concurrency_token,
+        idempotency_key="idem-malformed",
+        disposition_id="disp-malformed",
+    )
+
+    receipt = await adapter.submit(command)
+
+    assert receipt.status is WritebackStatus.UNKNOWN
+    assert receipt.confirmation_evidence is None
 
 
 @pytest.mark.asyncio

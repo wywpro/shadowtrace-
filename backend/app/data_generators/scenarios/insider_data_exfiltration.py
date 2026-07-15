@@ -8,13 +8,17 @@ from typing import Any
 from app.data_generators.scenarios._common import (
     DEFAULT_BASE_TIME,
     DEFAULT_TENANT,
+    SCENARIO_VARIANTS,
     capability_gap_connector,
     disposition_connector,
     event,
+    failure_profile_for_variant,
     log_only_connector,
     make_ref,
+    normalize_variant,
+    telemetry_for_variant,
 )
-from app.mock_xdr.models import MockFailureProfile, MockXDRScenario, ScenarioTick, TickOperation
+from app.mock_xdr.models import MockXDRScenario, ScenarioTick, ScenarioVariant, TickOperation
 from app.models.enums import SourceDisposition, SourceObjectKind
 from app.models.source import SourceAlert, SourceAsset, SourceIncident, SourceLog
 
@@ -43,8 +47,13 @@ LOG_EDR_ID = "log_edr_proc_chain_001"
 LOG_NET_ID = "550011"
 
 
-def build_insider_data_exfiltration(*, seed: int = 42) -> MockXDRScenario:
+def build_insider_data_exfiltration(
+    *,
+    seed: int = 42,
+    variant: ScenarioVariant | str = ScenarioVariant.NORMAL,
+) -> MockXDRScenario:
     """Build the insider exfiltration scenario (deterministic under ``seed``)."""
+    selected_variant = normalize_variant(variant)
     base = DEFAULT_BASE_TIME
     tenant = DEFAULT_TENANT
     conn_log = log_only_connector()
@@ -90,24 +99,30 @@ def build_insider_data_exfiltration(*, seed: int = 42) -> MockXDRScenario:
             first_seen_at=base,
             last_seen_at=base,
             normalized={"variant": "primary"},
-        ),
-        SourceAsset(
-            reference=asset_no_agent_ref,
-            numeric_asset_id=ASSET_NO_AGENT_ID,
-            hostname="PC-FIN-099",
-            ip="10.20.30.99",
-            agent_status="not_installed",
-            normalized={"variant": "agent_not_installed"},
-        ),
-        SourceAsset(
-            reference=asset_offline_ref,
-            numeric_asset_id=ASSET_OFFLINE_ID,
-            hostname="PC-FIN-077",
-            ip="10.20.30.77",
-            agent_status="offline",
-            normalized={"variant": "device_offline"},
-        ),
+        )
     ]
+    if selected_variant is ScenarioVariant.AGENT_NOT_INSTALLED:
+        assets.append(
+            SourceAsset(
+                reference=asset_no_agent_ref,
+                numeric_asset_id=ASSET_NO_AGENT_ID,
+                hostname="PC-FIN-099",
+                ip="10.20.30.99",
+                agent_status="not_installed",
+                normalized={"variant": "agent_not_installed"},
+            )
+        )
+    if selected_variant is ScenarioVariant.DEVICE_OFFLINE:
+        assets.append(
+            SourceAsset(
+                reference=asset_offline_ref,
+                numeric_asset_id=ASSET_OFFLINE_ID,
+                hostname="PC-FIN-077",
+                ip="10.20.30.77",
+                agent_status="offline",
+                normalized={"variant": "device_offline"},
+            )
+        )
 
     log_dlp_ref = make_ref(
         SourceObjectKind.LOG,
@@ -237,13 +252,18 @@ def build_insider_data_exfiltration(*, seed: int = 42) -> MockXDRScenario:
         ),
     ]
 
+    impacted_asset_refs = [asset_primary_ref]
+    if selected_variant is ScenarioVariant.AGENT_NOT_INSTALLED:
+        impacted_asset_refs.append(asset_no_agent_ref)
+    if selected_variant is ScenarioVariant.DEVICE_OFFLINE:
+        impacted_asset_refs.append(asset_offline_ref)
     incident = SourceIncident(
         reference=incident_ref,
         title="Finance endpoint suspected data exfiltration",
         level="critical",
         gpt_verdict_label="suspected_insider_threat",
         related_alert_refs=[alert_dlp_ref, alert_edr_ref, alert_net_ref],
-        impacted_asset_refs=[asset_primary_ref, asset_no_agent_ref, asset_offline_ref],
+        impacted_asset_refs=impacted_asset_refs,
         normalized={
             "account": ACCOUNT,
             "hostname": HOST,
@@ -251,7 +271,10 @@ def build_insider_data_exfiltration(*, seed: int = 42) -> MockXDRScenario:
         },
     )
 
-    timeline = _build_timeline(base=base, seed=seed)
+    timeline = telemetry_for_variant(
+        _build_timeline(base=base, seed=seed),
+        variant=selected_variant,
+    )
     ticks = [
         ScenarioTick(
             offset_seconds=3600,
@@ -272,36 +295,37 @@ def build_insider_data_exfiltration(*, seed: int = 42) -> MockXDRScenario:
 
     return MockXDRScenario(
         scenario_id=SCENARIO_ID,
-        name="Insider data exfiltration (finance endpoint)",
+        name=f"Insider data exfiltration (finance endpoint) [{selected_variant.value}]",
+        variant=selected_variant,
         base_time=base,
         source_tenant_id=tenant,
         incidents=[incident],
         alerts=alerts,
         assets=assets,
         logs=logs,
-        connectors=[conn_log, conn_disp, conn_gap],
+        connectors=[
+            conn_log,
+            conn_disp,
+            *([conn_gap] if selected_variant is ScenarioVariant.CAPABILITY_GAP else []),
+        ],
         telemetry_timeline=timeline,
         ticks=ticks,
-        failure_profile=MockFailureProfile(
+        failure_profile=failure_profile_for_variant(
             seed=seed,
-            force_partial_targets=True,
-            control_plane_enabled=True,
-            # Provider business error is Mock-custom only (not a vendor code).
-            missing_fields=[],
+            variant=selected_variant,
         ),
         expected_outcome={
             "expected_verdict": "confirmed_threat",
             "expected_severity": "critical",
             "risk_score": 92,
             "disposition_policy": "required",
-            "variants": [
-                "agent_not_installed",
-                "device_offline",
-                "capability_gap",
-                "partial_success",
-                "capacity_limit_exceeded",
-            ],
-            "provider_error_codes": ["capacity_limit_exceeded"],
+            "active_variant": selected_variant.value,
+            "variants": list(SCENARIO_VARIANTS),
+            "provider_error_codes": (
+                ["capacity_limit_exceeded"]
+                if selected_variant is ScenarioVariant.CAPACITY_LIMIT_EXCEEDED
+                else []
+            ),
         },
     )
 

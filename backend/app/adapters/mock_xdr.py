@@ -160,6 +160,16 @@ class MockXDRSourceAdapter(BaseSourceAdapter):
                 await asyncio.sleep(delay)
                 delay *= 2
                 continue
+            if resp.status_code == 504:
+                if attempt >= self._max_retries:
+                    raise DependencyUnavailableError(
+                        "mock source timeout",
+                        error_code="timeout",
+                        details={"path": path},
+                    )
+                await asyncio.sleep(delay)
+                delay *= 2
+                continue
             if resp.status_code >= 500:
                 if attempt >= self._max_retries:
                     raise DependencyUnavailableError(
@@ -224,7 +234,15 @@ class MockXDRSourceAdapter(BaseSourceAdapter):
                 params["updated_after"] = updated_after.isoformat()
 
             payload = await self._get_json(path, params=params)
-            page_items = payload.get("items") or []
+            if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+                self._degraded_kinds.add(kind)
+                self._quality.record(
+                    stage="source_list",
+                    error_category="malformed_payload",
+                    detail={"kind": kind},
+                )
+                continue
+            page_items = payload["items"]
             kind_next = payload.get("next_cursor")
             halted = False
             for body in page_items:
@@ -275,6 +293,11 @@ class MockXDRSourceAdapter(BaseSourceAdapter):
                 return None
             raise
         if not isinstance(body, dict):
+            self._quality.record(
+                stage="source_get",
+                error_category="malformed_payload",
+                detail={"kind": kind},
+            )
             return None
         return parse_source_item(kind, body, quality=self._quality)
 
@@ -423,7 +446,11 @@ class MockXDRDispositionAdapter(BaseDispositionAdapter):
                 details=body.get("details") or {},
             )
 
-        receipt = DispositionReceipt.model_validate(resp.json())
+        try:
+            receipt = DispositionReceipt.model_validate(resp.json())
+        except ValueError:
+            logger.warning("disposition submit returned malformed payload")
+            return await self._unknown_after_loss(command)
         return receipt.model_copy(
             update={"raw_result": sanitize_raw_result(dict(receipt.raw_result))}
         )
@@ -431,7 +458,17 @@ class MockXDRDispositionAdapter(BaseDispositionAdapter):
     async def _unknown_after_loss(self, command: DispositionCommand) -> DispositionReceipt:
         caps = self.capabilities()
         if caps.supports_lookup_by_idempotency:
-            found = await self.lookup_submission(command.idempotency_key, command.source_locator)
+            try:
+                found = await self.lookup_submission(
+                    command.idempotency_key,
+                    command.source_locator,
+                )
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.warning(
+                    "disposition idempotency lookup inconclusive: %s",
+                    type(exc).__name__,
+                )
+                found = None
             if found is not None:
                 return found
         # No automatic re-execution of entity actions — UNKNOWN + manual/verify path.

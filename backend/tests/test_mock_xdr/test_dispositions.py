@@ -6,22 +6,35 @@ import pytest
 
 from app.mock_xdr.models import MockFailureProfile
 from app.mock_xdr.state import MockValidationError, MockXDRState, idempotency_key_hash
+from app.models.disposition import TargetDispositionResult
 from app.models.enums import (
     ConfirmationEvidence,
     DispositionIntentKind,
     ExecutionJobStatus,
     SourceDisposition,
+    TargetExecutionStatus,
     WritebackStatus,
 )
 from tests.test_mock_xdr.conftest import disposition_command
 
 
-def test_sync_accept_then_readback_confirmed(state: MockXDRState) -> None:
+def test_sync_requires_authoritative_change_before_readback_confirmed(
+    state: MockXDRState,
+) -> None:
     token = state.objects[("incident", "INC-1")].concurrency_token
     cmd = disposition_command(token=token)
     receipt = state.submit_disposition(cmd)
     assert receipt.status is WritebackStatus.ACCEPTED
     assert receipt.provider_job_id is None
+    inconclusive = state.confirm_via_readback(cmd.disposition_id)
+    assert inconclusive.status is WritebackStatus.UNKNOWN
+    assert inconclusive.confirmation_evidence is None
+    state.transition_source_disposition(
+        "incident",
+        "INC-1",
+        SourceDisposition.CONTAINED,
+        allow_unknown_recovery=True,
+    )
     confirmed = state.confirm_via_readback(cmd.disposition_id)
     assert confirmed.status is WritebackStatus.CONFIRMED
     assert confirmed.confirmation_evidence is ConfirmationEvidence.READBACK_VERIFIED
@@ -44,11 +57,24 @@ def test_partial_target_success(state: MockXDRState) -> None:
         token=token,
         disposition_id="disp-partial",
     )
+    cmd = cmd.model_copy(
+        update={
+            "target_results": [
+                *cmd.target_results,
+                TargetDispositionResult(
+                    canonical_target="host:pc-2",
+                    status=TargetExecutionStatus.SUCCESS,
+                ),
+            ]
+        }
+    )
     receipt = state.submit_disposition(cmd)
     assert receipt.status is WritebackStatus.PARTIAL
-    assert len(receipt.target_results) == 1
-    # With one target and force_partial, first is CONFIRMED in our impl when only one —
-    # ensure status domain is WritebackStatus not job status.
+    assert len(receipt.target_results) == 2
+    assert {result.status.value for result in receipt.target_results} == {
+        "confirmed",
+        "failed",
+    }
     assert receipt.provider_job_id is None
 
 
@@ -65,6 +91,12 @@ def test_async_job_queued_running_terminal(state: MockXDRState) -> None:
     assert job.status is ExecutionJobStatus.QUEUED
     state.advance_job(receipt.provider_job_id, ExecutionJobStatus.RUNNING)
     assert state.get_job(receipt.provider_job_id).status is ExecutionJobStatus.RUNNING
+    state.transition_source_disposition(
+        "incident",
+        "INC-1",
+        SourceDisposition.CONTAINED,
+        allow_unknown_recovery=True,
+    )
     state.advance_job(receipt.provider_job_id, ExecutionJobStatus.SUCCESS)
     assert state.get_job(receipt.provider_job_id).status is ExecutionJobStatus.SUCCESS
     # WritebackStatus lives on receipts — not mixed into job.status
@@ -107,7 +139,34 @@ def test_idempotency_reuse_with_different_payload_rejected(state: MockXDRState) 
         state.submit_disposition(second)
 
 
-def test_source_disposition_unchanged_until_confirm(state: MockXDRState) -> None:
+def test_disposition_id_reuse_cannot_overwrite_original_attempt(state: MockXDRState) -> None:
+    token = state.objects[("incident", "INC-1")].concurrency_token
+    first = disposition_command(
+        token=token,
+        idempotency_key="idem-original",
+        disposition_id="disp-immutable",
+        target=SourceDisposition.CONTAINED,
+    )
+    first_receipt = state.submit_disposition(first)
+    second = disposition_command(
+        token=token,
+        idempotency_key="idem-other",
+        disposition_id="disp-immutable",
+        target=SourceDisposition.COMPLETED,
+    )
+    with pytest.raises(MockValidationError) as exc_info:
+        state.submit_disposition(second)
+    assert exc_info.value.error_code == "disposition_id_reuse"
+    original = state.lookup_by_idempotency(idempotency_key_hash("idem-original"))
+    assert original is not None
+    assert original.writeback_id == first_receipt.writeback_id
+    assert original.action_id == first.action_id
+    assert state.disposition_by_id["disp-immutable"].command == first
+
+
+def test_source_disposition_changes_only_through_authoritative_control(
+    state: MockXDRState,
+) -> None:
     token = state.objects[("incident", "INC-1")].concurrency_token
     cmd = disposition_command(token=token, target=SourceDisposition.CONTAINED)
     receipt = state.submit_disposition(cmd)
@@ -115,8 +174,20 @@ def test_source_disposition_unchanged_until_confirm(state: MockXDRState) -> None
     # Accept alone must NOT mutate the source object's disposition.
     rb = state.readback_source_disposition("incident", "INC-1")
     assert rb["source_disposition"] == SourceDisposition.PENDING.value
-    # Only the authoritative readback confirm applies provider truth.
-    state.confirm_via_readback(cmd.disposition_id)
+    # Readback without an authoritative change remains inconclusive.
+    inconclusive = state.confirm_via_readback(cmd.disposition_id)
+    assert inconclusive.status is WritebackStatus.UNKNOWN
+    rb2 = state.readback_source_disposition("incident", "INC-1")
+    assert rb2["source_disposition"] == SourceDisposition.PENDING.value
+    # The independent control-plane mutation changes provider truth.
+    state.transition_source_disposition(
+        "incident",
+        "INC-1",
+        SourceDisposition.CONTAINED,
+        allow_unknown_recovery=True,
+    )
+    confirmed = state.confirm_via_readback(cmd.disposition_id)
+    assert confirmed.status is WritebackStatus.CONFIRMED
     rb2 = state.readback_source_disposition("incident", "INC-1")
     assert rb2["source_disposition"] == SourceDisposition.CONTAINED.value
 

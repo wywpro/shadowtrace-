@@ -117,6 +117,12 @@ def test_legal_supersede_keeps_history_one_confirmed_head(state: MockXDRState) -
     assert state.disposition_by_id["disp-old"].superseded is True
     assert state.disposition_by_id["disp-old"].active is False
     assert state.active_terminal_heads[("INC-1", 1)] == "disp-new"
+    state.transition_source_disposition(
+        "incident",
+        "INC-1",
+        SourceDisposition.IGNORED,
+        allow_unknown_recovery=True,
+    )
     state.confirm_via_readback("disp-new")
     assert state.disposition_by_id["disp-new"].latest_status is WritebackStatus.CONFIRMED
     # History retained
@@ -129,6 +135,12 @@ def test_required_missing_terminal_lineage_detected(state: MockXDRState) -> None
     token = state.objects[("incident", "INC-1")].concurrency_token
     cmd = disposition_command(token=token)
     state.submit_disposition(cmd)
+    state.transition_source_disposition(
+        "incident",
+        "INC-1",
+        SourceDisposition.CONTAINED,
+        allow_unknown_recovery=True,
+    )
     state.confirm_via_readback(cmd.disposition_id)
     missing_after = state.required_events_missing_terminal_lineage()
     assert not any(m == "INC-1" or m.startswith("INC-1@") for m in missing_after)

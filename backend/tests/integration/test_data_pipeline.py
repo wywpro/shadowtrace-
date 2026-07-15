@@ -56,6 +56,16 @@ async def _count_ingested_source_objects(session: AsyncSession) -> int:
     )
 
 
+def _mock_object_count(
+    state: MockXDRState,
+    kinds: Sequence[SourceObjectKind] = ALL_SOURCE_KINDS,
+) -> int:
+    selected = {kind.value if isinstance(kind, SourceObjectKind) else str(kind) for kind in kinds}
+    return sum(
+        1 for (kind, _), stored in state.objects.items() if kind in selected and not stored.deleted
+    )
+
+
 @pytest.mark.asyncio
 async def test_mock_xdr_http_pipeline_persists_queryable_frozen_context(
     source_adapter: MockXDRSourceAdapter,
@@ -71,7 +81,8 @@ async def test_mock_xdr_http_pipeline_persists_queryable_frozen_context(
         ALL_SOURCE_KINDS,
         batch_size=1,
     )
-    assert summary.accepted == 10
+    expected_object_count = _mock_object_count(mock_xdr_state)
+    assert summary.accepted == expected_object_count
     assert summary.duplicate == 0
     assert summary.rejected == 0
     assert summary.degraded is False
@@ -79,7 +90,7 @@ async def test_mock_xdr_http_pipeline_persists_queryable_frozen_context(
     assert summary.watermark_after is not None
 
     assert await _count(db_session, orm.SecurityEvent) == 1
-    assert await _count_ingested_source_objects(db_session) >= 10
+    assert await _count_ingested_source_objects(db_session) >= expected_object_count
     assert await _count(db_session, orm.SourceEventLink) == 4
 
     expected_assets = {
@@ -239,7 +250,13 @@ async def test_bad_schema_records_quality_degrades_connector_and_halts_watermark
         ],
         batch_size=2,
     )
-    assert valid.accepted == 7
+    valid_kinds = [
+        SourceObjectKind.INCIDENT,
+        SourceObjectKind.ASSET,
+        SourceObjectKind.LOG,
+    ]
+    expected_valid_count = _mock_object_count(mock_xdr_state, valid_kinds)
+    assert valid.accepted == expected_valid_count
     assert valid.rejected == 0
 
     source_adapter.checkpoint_key = "mock_xdr:bad-alerts"  # type: ignore[attr-defined]
@@ -254,7 +271,7 @@ async def test_bad_schema_records_quality_degrades_connector_and_halts_watermark
     assert bad.watermark_before is None
     assert bad.watermark_after is None
 
-    assert await _count_ingested_source_objects(db_session) == 7
+    assert await _count_ingested_source_objects(db_session) == expected_valid_count
     assert (await event_service.list_events()).total == 1
     quality = await db_session.scalar(
         select(orm.DataQualityError).where(
@@ -342,7 +359,7 @@ async def test_cursor_resume_and_delivery_replay_do_not_duplicate_event(
     assert resumed.duplicate > 0
     assert resumed.degraded is False
     assert await _count(db_session, orm.SecurityEvent) == 1
-    assert await _count_ingested_source_objects(db_session) == 10
+    assert await _count_ingested_source_objects(db_session) == _mock_object_count(mock_xdr_state)
 
     incident = next(
         stored.body

@@ -117,6 +117,7 @@ ERROR_CODE_REGISTRY: dict[str, ErrorCategory] = {
     "unauthorized_field": ErrorCategory.USER_INPUT,
     "mock_validation_error": ErrorCategory.USER_INPUT,
     "idempotency_key_reuse": ErrorCategory.USER_INPUT,
+    "disposition_id_reuse": ErrorCategory.USER_INPUT,
     # Adapters (ISSUE-012)
     "adapter_not_found": ErrorCategory.USER_INPUT,
     "adapter_validation_error": ErrorCategory.USER_INPUT,

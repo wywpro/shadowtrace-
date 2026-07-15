@@ -25,6 +25,10 @@ ObjectKind = Literal["incident", "alert", "asset", "log"]
 GLOBAL_STATE = MockXDRState()
 
 
+class MockMalformedPayloadError(Exception):
+    """Control-flow signal for deterministic HTTP-200 malformed responses."""
+
+
 def create_app(*, state: MockXDRState | None = None) -> FastAPI:
     """Build a standalone Mock XDR FastAPI application."""
     app = FastAPI(title="ShadowTrace MockXDRServer", version="0.1.0")
@@ -71,6 +75,16 @@ def create_app(*, state: MockXDRState | None = None) -> FastAPI:
         return JSONResponse(
             status_code=409,
             content={"error_code": exc.error_code, "error_message": exc.message, "details": {}},
+        )
+
+    @app.exception_handler(MockMalformedPayloadError)
+    async def _malformed(_: Request, __: MockMalformedPayloadError) -> JSONResponse:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "items": {"unexpected": "not-a-list"},
+                "malformed_payload": True,
+            },
         )
 
     # ---- health / meta -----------------------------------------------------
@@ -414,6 +428,8 @@ def _maybe_fault(st: MockXDRState) -> None:
             status_code=504,
             detail={"error_code": "timeout", "error_message": "mock timeout", "details": {}},
         )
+    if profile.malformed_payload_every_n and n % profile.malformed_payload_every_n == 0:
+        raise MockMalformedPayloadError
 
 
 # Module-level app for ``uvicorn app.mock_xdr.api:app``
