@@ -1,0 +1,14 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "title": "Event Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id"
+  ],
+  "title": "AgentInput",
+  "type": "object"
+}

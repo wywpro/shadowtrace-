@@ -26,14 +26,17 @@ from app.models.disposition import (
 from app.models.enums import ExecutionSubstate
 from app.models.execution import ActionExecutionJob, ExecutionSummary
 from app.models.report import InvestigationReport
-from app.models.security_event import SecurityEvent
+from app.models.security_event import EventSummary
 from app.models.source import SourceObjectState
 
 
 class EventContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    event: SecurityEvent | None = None
+    # EventSummary (never the full SecurityEvent, ISSUE-094 §2): agents/API
+    # consumers must only see the redacted projection, and the store always
+    # validates through this type — no ``model_construct`` bypass.
+    event: EventSummary | None = None
 
     # --- source state family ---
     source_snapshot: dict[str, Any] | None = None

@@ -36,6 +36,13 @@ from app.models.enums import (
     WritebackStatus,
 )
 from app.models.report import InvestigationReport, ReportSection
+
+# EventListItem / EventSummary live in app.models.security_event (ISSUE-094 §2)
+# so EventContext.event can be typed without the models layer depending on the
+# API layer; re-exported here for backward-compatible ``from
+# app.api.v1.schemas import EventSummary`` call sites.
+from app.models.security_event import EventListItem as EventListItem
+from app.models.security_event import EventSummary as EventSummary
 from app.models.security_event import SecurityEvent
 from app.models.source import SourceReference
 
@@ -124,30 +131,8 @@ class IngestSourceRecordRequest(_StrictRequest):
 # --------------------------------------------------------------------------- #
 # Event responses
 # --------------------------------------------------------------------------- #
-class EventListItem(BaseModel):
-    event_id: str
-    event_type: EventType
-    title: str
-    # ``status`` is always the local EventStatus (never an external status).
-    status: EventStatus
-    severity: Severity
-    risk_score: int
-    final_verdict: FinalVerdict
-    writeback_required: bool
-    writeback_readiness: WritebackReadiness
-    # null when no writeback command exists; readiness distinguishes NOT_REQUIRED
-    # from blocked.
-    writeback_overall_status: WritebackStatus | None = None
-    pending_writeback_count: int = 0
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-    occurred_at: datetime | None = None
-
-
-class EventSummary(EventListItem):
-    disposition_policy: DispositionPolicy
-    external_unsynced: bool = False
-    escalated: bool = False
+# EventListItem / EventSummary are defined in app.models.security_event and
+# imported above.
 
 
 class EventListResponse(PageMeta):
@@ -277,7 +262,9 @@ class ConnectorPublic(BaseModel):
     device_type: str | None = None
     status: str
     capabilities: dict[str, str] = Field(default_factory=dict)
-    disposition_policy_default: DispositionPolicy = DispositionPolicy.NOT_REQUIRED
+    # None means "not provisioned" — live connectors must fail closed rather than
+    # silently reporting NOT_REQUIRED to API clients.
+    disposition_policy_default: DispositionPolicy | None = None
     last_sync_at: datetime | None = None
 
 

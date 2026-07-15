@@ -7,6 +7,7 @@ import pytest
 from app.models.enums import (
     ActionCategory,
     ActionExecutionPhase,
+    ActionLevel,
     ActionStatus,
     CaseLabel,
     ConfirmationEvidence,
@@ -359,6 +360,59 @@ def test_response_action_legal_and_illegal_edges() -> None:
         validate_action_status_transition(
             ActionCategory.RESPONSE, ActionStatus.PENDING, ActionStatus.EXECUTING
         )
+
+
+def test_high_level_response_action_requires_approval_evidence() -> None:
+    """L2+ RESPONSE/ROLLBACK actions must not reach APPROVED without a
+    persisted ApprovalRecord — auto_execute never bypasses the human gate."""
+    with pytest.raises(InvalidStateTransitionError, match="ApprovalRecord"):
+        validate_action_status_transition(
+            ActionCategory.RESPONSE,
+            ActionStatus.PENDING,
+            ActionStatus.APPROVED,
+            action_level=ActionLevel.L2,
+        )
+    with pytest.raises(InvalidStateTransitionError, match="ApprovalRecord"):
+        validate_action_status_transition(
+            ActionCategory.RESPONSE,
+            ActionStatus.PENDING,
+            ActionStatus.APPROVED,
+            action_level=ActionLevel.L2,
+            auto_execute=True,
+        )
+    # With evidence, the transition is legal.
+    validate_action_status_transition(
+        ActionCategory.RESPONSE,
+        ActionStatus.PENDING,
+        ActionStatus.APPROVED,
+        action_level=ActionLevel.L2,
+        has_approval_evidence=True,
+    )
+    # Same rule applies to ROLLBACK.
+    with pytest.raises(InvalidStateTransitionError, match="ApprovalRecord"):
+        validate_action_status_transition(
+            ActionCategory.ROLLBACK,
+            ActionStatus.PENDING,
+            ActionStatus.APPROVED,
+            action_level=ActionLevel.L3,
+        )
+
+
+def test_low_level_response_action_auto_approves_without_evidence() -> None:
+    """L0/L1 actions are the auto-approvable tier — no ApprovalRecord required."""
+    validate_action_status_transition(
+        ActionCategory.RESPONSE,
+        ActionStatus.PENDING,
+        ActionStatus.APPROVED,
+        action_level=ActionLevel.L1,
+    )
+    validate_action_status_transition(
+        ActionCategory.RESPONSE,
+        ActionStatus.PENDING,
+        ActionStatus.APPROVED,
+        action_level=ActionLevel.L0,
+        auto_execute=True,
+    )
 
 
 def test_superseded_rejects_when_job_exists() -> None:

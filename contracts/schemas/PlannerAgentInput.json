@@ -1,0 +1,827 @@
+{
+  "$defs": {
+    "AccountEntity": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "$ref": "#/$defs/SourceReference"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "attributes": {
+          "additionalProperties": true,
+          "title": "Attributes",
+          "type": "object"
+        },
+        "entity_type": {
+          "const": "account",
+          "default": "account",
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "username": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Username"
+        },
+        "domain": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Domain"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        }
+      },
+      "required": [
+        "entity_id"
+      ],
+      "title": "AccountEntity",
+      "type": "object"
+    },
+    "DomainEntity": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "$ref": "#/$defs/SourceReference"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "attributes": {
+          "additionalProperties": true,
+          "title": "Attributes",
+          "type": "object"
+        },
+        "entity_type": {
+          "const": "domain",
+          "default": "domain",
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "fqdn": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fqdn"
+        }
+      },
+      "required": [
+        "entity_id"
+      ],
+      "title": "DomainEntity",
+      "type": "object"
+    },
+    "EntitySet": {
+      "additionalProperties": false,
+      "description": "Container of the six entity categories.",
+      "properties": {
+        "accounts": {
+          "items": {
+            "$ref": "#/$defs/AccountEntity"
+          },
+          "title": "Accounts",
+          "type": "array"
+        },
+        "hosts": {
+          "items": {
+            "$ref": "#/$defs/HostEntity"
+          },
+          "title": "Hosts",
+          "type": "array"
+        },
+        "ips": {
+          "items": {
+            "$ref": "#/$defs/IPEntity"
+          },
+          "title": "Ips",
+          "type": "array"
+        },
+        "domains": {
+          "items": {
+            "$ref": "#/$defs/DomainEntity"
+          },
+          "title": "Domains",
+          "type": "array"
+        },
+        "processes": {
+          "items": {
+            "$ref": "#/$defs/ProcessEntity"
+          },
+          "title": "Processes",
+          "type": "array"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/FileEntity"
+          },
+          "title": "Files",
+          "type": "array"
+        }
+      },
+      "title": "EntitySet",
+      "type": "object"
+    },
+    "EventType": {
+      "description": "Supported security event types (intro §1); extensible via scenario packs.",
+      "enum": [
+        "account_anomaly",
+        "host_compromise",
+        "data_exfiltration",
+        "insider_threat",
+        "malicious_process",
+        "suspicious_domain",
+        "lateral_movement",
+        "other"
+      ],
+      "title": "EventType",
+      "type": "string"
+    },
+    "ExecutionPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "plan_id": {
+          "title": "Plan Id",
+          "type": "string"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/PlanStep"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "budget": {
+          "$ref": "#/$defs/PlanBudget"
+        },
+        "revision": {
+          "default": 0,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "revise_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revise Reason"
+        },
+        "degraded": {
+          "default": false,
+          "title": "Degraded",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "plan_id",
+        "event_id"
+      ],
+      "title": "ExecutionPlan",
+      "type": "object"
+    },
+    "FileEntity": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "$ref": "#/$defs/SourceReference"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "attributes": {
+          "additionalProperties": true,
+          "title": "Attributes",
+          "type": "object"
+        },
+        "entity_type": {
+          "const": "file",
+          "default": "file",
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hash"
+        }
+      },
+      "required": [
+        "entity_id"
+      ],
+      "title": "FileEntity",
+      "type": "object"
+    },
+    "HostEntity": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "$ref": "#/$defs/SourceReference"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "attributes": {
+          "additionalProperties": true,
+          "title": "Attributes",
+          "type": "object"
+        },
+        "entity_type": {
+          "const": "host",
+          "default": "host",
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "hostname": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hostname"
+        },
+        "ip": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ip"
+        },
+        "os": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Os"
+        }
+      },
+      "required": [
+        "entity_id"
+      ],
+      "title": "HostEntity",
+      "type": "object"
+    },
+    "IPEntity": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "$ref": "#/$defs/SourceReference"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "attributes": {
+          "additionalProperties": true,
+          "title": "Attributes",
+          "type": "object"
+        },
+        "entity_type": {
+          "const": "ip",
+          "default": "ip",
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "scope": {
+          "default": "unknown",
+          "enum": [
+            "external",
+            "internal",
+            "unknown"
+          ],
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_id"
+      ],
+      "title": "IPEntity",
+      "type": "object"
+    },
+    "PlanBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_tool_calls": {
+          "default": 30,
+          "title": "Max Tool Calls",
+          "type": "integer"
+        },
+        "max_llm_calls": {
+          "default": 20,
+          "title": "Max Llm Calls",
+          "type": "integer"
+        },
+        "max_duration_s": {
+          "default": 300,
+          "title": "Max Duration S",
+          "type": "integer"
+        }
+      },
+      "title": "PlanBudget",
+      "type": "object"
+    },
+    "PlanStep": {
+      "additionalProperties": false,
+      "properties": {
+        "step_order": {
+          "title": "Step Order",
+          "type": "integer"
+        },
+        "step_goal": {
+          "title": "Step Goal",
+          "type": "string"
+        },
+        "assigned_agent": {
+          "enum": [
+            "super_agent",
+            "planner_agent",
+            "triage_agent",
+            "evidence_agent",
+            "graph_agent",
+            "rag_agent",
+            "risk_agent",
+            "response_agent",
+            "verify_agent",
+            "report_agent",
+            "memory_agent",
+            "tool_agent"
+          ],
+          "title": "Assigned Agent",
+          "type": "string"
+        },
+        "required_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Tools",
+          "type": "array"
+        },
+        "success_criteria": {
+          "default": "",
+          "title": "Success Criteria",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_order",
+        "step_goal",
+        "assigned_agent"
+      ],
+      "title": "PlanStep",
+      "type": "object"
+    },
+    "ProcessEntity": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "$ref": "#/$defs/SourceReference"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "attributes": {
+          "additionalProperties": true,
+          "title": "Attributes",
+          "type": "object"
+        },
+        "entity_type": {
+          "const": "process",
+          "default": "process",
+          "title": "Entity Type",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "pid": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pid"
+        },
+        "command_line": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command Line"
+        },
+        "hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hash"
+        }
+      },
+      "required": [
+        "entity_id"
+      ],
+      "title": "ProcessEntity",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "SourceDisposition": {
+      "description": "Normalized external disposition label; source_status_raw keeps the original.",
+      "enum": [
+        "pending",
+        "processing",
+        "contained",
+        "completed",
+        "suspended",
+        "ignored",
+        "unknown"
+      ],
+      "title": "SourceDisposition",
+      "type": "string"
+    },
+    "SourceObjectKind": {
+      "description": "Canonical source object kind used for the internal discriminated union.",
+      "enum": [
+        "incident",
+        "alert",
+        "asset",
+        "log",
+        "connector"
+      ],
+      "title": "SourceObjectKind",
+      "type": "string"
+    },
+    "SourceReference": {
+      "additionalProperties": false,
+      "description": "Immutable snapshot reference to an external source object (intro §4.3).\n\nIdentity five-tuple is\n``(source_product, source_tenant_id, connector_id, source_kind, source_object_id)``.\nThe adapter-native ``source_object_type`` and opaque ``source_concurrency_token``\ndo NOT participate in identity.",
+      "properties": {
+        "source_kind": {
+          "$ref": "#/$defs/SourceObjectKind"
+        },
+        "source_product": {
+          "title": "Source Product",
+          "type": "string"
+        },
+        "source_tenant_id": {
+          "title": "Source Tenant Id",
+          "type": "string"
+        },
+        "connector_id": {
+          "title": "Connector Id",
+          "type": "string"
+        },
+        "source_object_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Object Type"
+        },
+        "source_object_id": {
+          "title": "Source Object Id",
+          "type": "string"
+        },
+        "parent_source_object_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Source Object Id"
+        },
+        "source_status_raw": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Status Raw"
+        },
+        "source_disposition": {
+          "$ref": "#/$defs/SourceDisposition",
+          "default": "unknown"
+        },
+        "source_concurrency_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Concurrency Token"
+        },
+        "source_updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Updated At"
+        },
+        "schema_version": {
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "ingested_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ingested At"
+        },
+        "raw_payload_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Payload Hash"
+        }
+      },
+      "required": [
+        "source_kind",
+        "source_product",
+        "source_tenant_id",
+        "connector_id",
+        "source_object_id"
+      ],
+      "title": "SourceReference",
+      "type": "object"
+    },
+    "TriageResult": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "$ref": "#/$defs/EventType"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "need_investigation": {
+          "title": "Need Investigation",
+          "type": "boolean"
+        },
+        "entities": {
+          "$ref": "#/$defs/EntitySet"
+        },
+        "ioc_list": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Ioc List",
+          "type": "array"
+        },
+        "reasoning": {
+          "default": "",
+          "title": "Reasoning",
+          "type": "string"
+        },
+        "degraded": {
+          "default": false,
+          "title": "Degraded",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "event_type",
+        "severity",
+        "need_investigation"
+      ],
+      "title": "TriageResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "title": "Event Id",
+      "type": "string"
+    },
+    "triage_result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TriageResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "previous_plan": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExecutionPlan"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "revise_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Revise Reason"
+    }
+  },
+  "required": [
+    "event_id"
+  ],
+  "title": "PlannerAgentInput",
+  "type": "object"
+}

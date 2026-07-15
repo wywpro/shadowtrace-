@@ -39,6 +39,7 @@ from app.services.context_service import (
     SetResult,
     ctx_key,
 )
+from app.services.degraded_flag_service import DegradedFlagService
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get(
@@ -303,9 +304,10 @@ async def test_rebuild_closed_from_snapshot(
     # security_event mirrors always win
     assert ctx.replan_count == 2
     assert ctx.degraded_flags == ["redis_context_unavailable=true"]
-    assert isinstance(ctx.event, dict)
-    assert ctx.event["event_id"] == event_id
-    assert ctx.event["status"] == "closed"
+    # ISSUE-094 §2: EventContext.event is always a validated EventSummary.
+    assert isinstance(ctx.event, EventSummary)
+    assert ctx.event.event_id == event_id
+    assert ctx.event.status.value == "closed"
 
 
 @pytest.mark.asyncio
@@ -439,6 +441,148 @@ async def test_rebuild_merges_late_writeback_receipt(
     assert ctx.writeback_summary.writeback_counts.get(WritebackStatus.CONFIRMED) == 1
 
 
+@pytest.mark.asyncio
+async def test_writeback_summary_never_invents_ready_for_empty_required_actions(
+    store: EventContextStore,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """ISSUE-093 §3: REQUIRED policy with no Action/outbox yet must not report READY."""
+    event_id = await _seed_event(session_factory, disposition_policy="required")
+
+    ctx = await store.rebuild_context(event_id)
+    assert ctx.writeback_summary is not None
+    assert ctx.writeback_summary.aggregate_readiness is WritebackReadiness.CAPABILITY_UNKNOWN
+    assert ctx.writeback_summary.required_action_count == 0
+    assert ctx.writeback_summary.applicable_action_count == 0
+
+
+@pytest.mark.asyncio
+async def test_writeback_summary_readiness_aggregate_fails_closed_on_worst_action(
+    store: EventContextStore,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Aggregate readiness must surface the worst blocking reason, never READY,
+    when at least one applicable/required Action is not ready."""
+    sfx = _sfx()
+    event_id = await _seed_event(session_factory, disposition_policy="required")
+    async with session_factory() as session:
+        async with session.begin():
+            session.add(
+                orm.Action(
+                    action_id=f"act-ready-{sfx}",
+                    event_id=event_id,
+                    plan_revision=1,
+                    action_fingerprint=f"fp-ready-{sfx}",
+                    action_category="response",
+                    action_name="block ip",
+                    tool_name="block_ip",
+                    action_level="l2",
+                    execution_owner="direct_tool",
+                    writeback_required=True,
+                    writeback_applicable=True,
+                    writeback_readiness=WritebackReadiness.READY.value,
+                )
+            )
+            session.add(
+                orm.Action(
+                    action_id=f"act-blocked-{sfx}",
+                    event_id=event_id,
+                    plan_revision=1,
+                    action_fingerprint=f"fp-blocked-{sfx}",
+                    action_category="response",
+                    action_name="isolate host",
+                    tool_name="isolate_host",
+                    action_level="l2",
+                    execution_owner="direct_tool",
+                    writeback_required=True,
+                    writeback_applicable=True,
+                    writeback_readiness=WritebackReadiness.CAPABILITY_UNSUPPORTED.value,
+                )
+            )
+
+    ctx = await store.rebuild_context(event_id)
+    assert ctx.writeback_summary is not None
+    assert (
+        ctx.writeback_summary.aggregate_readiness is WritebackReadiness.CAPABILITY_UNSUPPORTED
+    )
+    assert ctx.writeback_summary.required_action_count == 2
+    assert ctx.writeback_summary.applicable_action_count == 2
+    assert f"act-blocked-{sfx}" in ctx.writeback_summary.blocked_action_ids
+    assert f"act-ready-{sfx}" not in ctx.writeback_summary.blocked_action_ids
+
+
+@pytest.mark.asyncio
+async def test_writeback_summary_status_aggregate_priority_order(
+    store: EventContextStore,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """CONFLICT > UNKNOWN > PENDING > FAILED > PARTIAL > CONFIRMED (ISSUE-093 §3)."""
+    sfx = _sfx()
+    event_id = await _seed_event(session_factory, disposition_policy="required")
+    async with session_factory() as session:
+        async with session.begin():
+            session.add(
+                orm.SourceConnector(
+                    connector_id=f"conn-{sfx}",
+                    source_product="mock_xdr",
+                    display_name="Mock",
+                )
+            )
+            await session.flush()
+            session.add(
+                orm.SourceObject(
+                    source_record_id=f"src-{sfx}",
+                    source_product="mock_xdr",
+                    source_tenant_id="t1",
+                    connector_id=f"conn-{sfx}",
+                    source_kind="incident",
+                    source_object_id=f"INC-{sfx}",
+                )
+            )
+            session.add(
+                orm.Action(
+                    action_id=f"act-{sfx}",
+                    event_id=event_id,
+                    plan_revision=1,
+                    action_fingerprint=f"fp-{sfx}",
+                    action_category="response",
+                    action_name="block ip",
+                    tool_name="block_ip",
+                    action_level="l2",
+                    execution_owner="direct_tool",
+                )
+            )
+            await session.flush()
+            for idx, status in enumerate(
+                (WritebackStatus.CONFIRMED, WritebackStatus.PENDING), start=1
+            ):
+                session.add(
+                    orm.DispositionOutbox(
+                        outbox_id=f"obx-{sfx}-{idx}",
+                        writeback_id=f"wbk-{sfx}-{idx}",
+                        disposition_id=f"disp-{sfx}-{idx}",
+                        action_id=f"act-{sfx}",
+                        event_id=event_id,
+                        closure_cycle=1,
+                        source_record_id=f"src-{sfx}",
+                        source_locator_hash="h" * 64,
+                        source_sequence=idx,
+                        intent_kind=DispositionIntentKind.ENTITY_ACTION_SUBMIT.value,
+                        logical_slot=f"slot-{idx}",
+                        idempotency_key=f"idem-{sfx}-{idx}",
+                        command_payload={},
+                        command_payload_sha256="a" * 64,
+                        delivery_status="delivered",
+                        latest_writeback_status=status.value,
+                    )
+                )
+
+    ctx = await store.rebuild_context(event_id)
+    assert ctx.writeback_summary is not None
+    # PENDING outranks CONFIRMED — the cycle is not fully settled.
+    assert ctx.writeback_summary.aggregate_status is WritebackStatus.PENDING
+
+
 # --------------------------------------------------------------------------- #
 # Redis degradation
 # --------------------------------------------------------------------------- #
@@ -516,3 +660,43 @@ async def test_degraded_memory_cache_refreshes_after_30s(
             store._degraded_cache_ts[event_id] = time.monotonic() - 31.0
             refreshed = await store.get(event_id, "graph_output")
             assert refreshed == {"nodes": 99}
+
+
+@pytest.mark.asyncio
+async def test_redis_recovery_rebuilds_when_database_version_is_newer(
+    store: EventContextStore,
+    session_factory: async_sessionmaker[AsyncSession],
+    redis_client: RedisClient,
+) -> None:
+    event_id = await _seed_event(session_factory)
+    await store.init_context(event_id, _summary(event_id))
+    service = DegradedFlagService(store, session_factory)
+    await service.set_flag(
+        event_id,
+        "disposition_writeback_blocked",
+        "old",
+        writer="EventService",
+    )
+
+    with patch.object(store._redis, "ping", new_callable=AsyncMock, return_value=False):
+        with patch("app.services.context_service.asyncio.sleep", new_callable=AsyncMock):
+            await service.set_flag(
+                event_id,
+                "disposition_writeback_blocked",
+                "capability_unknown",
+                writer="EventService",
+            )
+
+    recovered = await store.get(event_id, "degraded_flags")
+    assert recovered == ["disposition_writeback_blocked=capability_unknown"]
+
+    raw_version = await redis_client.get_client().hget(
+        ctx_key(event_id),
+        "degraded_flags__version",
+    )
+    assert RedisClient.loads(raw_version) == await store.get_field_version(
+        event_id,
+        "degraded_flags",
+    )
+    full = await store.get_full_context(event_id)
+    assert full.degraded_flags == ["disposition_writeback_blocked=capability_unknown"]

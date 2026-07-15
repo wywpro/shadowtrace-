@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -91,6 +93,38 @@ def normalize_writer(writer: str) -> str:
     return WRITER_ALIASES.get(writer, writer)
 
 
+@dataclass(frozen=True, slots=True)
+class WriterCapability:
+    """Opaque writer identity issued and tracked by one WorkingMemory instance."""
+
+    owner: str
+    _nonce: object
+
+
+@dataclass(frozen=True, slots=True)
+class BoundWorkingMemory:
+    """Agent-facing memory view bound to one non-self-reported writer identity."""
+
+    _memory: WorkingMemory
+    _capability: WriterCapability
+
+    @property
+    def writer_name(self) -> str:
+        return self._capability.owner
+
+    async def read(self, event_id: str, key: str) -> Any:
+        return await self._memory.read(event_id, key, reader=self._capability)
+
+    async def write(self, event_id: str, key: str, value: Any) -> None:
+        await self._memory.write(event_id, key, value, writer=self._capability)
+
+    async def append_scratchpad(self, event_id: str, note: str) -> None:
+        await self._memory.append_scratchpad(event_id, note, writer=self._capability)
+
+    async def read_scratchpad(self, event_id: str) -> list[ScratchpadEntry]:
+        return await self._memory.read_scratchpad(event_id, reader=self._capability)
+
+
 class WorkingMemory:
     """Owner-gated EventContext access with scratchpad + access audit."""
 
@@ -108,6 +142,7 @@ class WorkingMemory:
         self._wm_strict = get_settings().wm_strict if wm_strict is None else wm_strict
         self._access_logs: dict[str, list[MemoryAccessLog]] = {}
         self._redis_degrade_marked: set[str] = set()
+        self._issued_capabilities: dict[WriterCapability, str] = {}
 
     def bind_degraded_flag_service(self, service: DegradedFlagService) -> None:
         """Wire DegradedFlagService after construction (breaks init cycles)."""
@@ -117,79 +152,129 @@ class WorkingMemory:
     # Public API
     # ------------------------------------------------------------------ #
 
-    async def read(self, event_id: str, key: str, reader: str) -> Any:
+    def for_writer(self, writer: str) -> BoundWorkingMemory:
+        """Bind a trusted composition-root identity to an agent-safe memory view."""
+        canonical = normalize_writer(writer)
+        if canonical not in set(FIELD_OWNERSHIP.values()):
+            raise GuardrailViolationError(
+                f"unknown working-memory writer identity: {writer!r}",
+                error_code="working_memory_unauthorized_write",
+                details={"writer": writer},
+            )
+        capability = WriterCapability(owner=canonical, _nonce=object())
+        self._issued_capabilities[capability] = canonical
+        return BoundWorkingMemory(self, capability)
+
+    async def read(
+        self,
+        event_id: str,
+        key: str,
+        reader: WriterCapability,
+    ) -> Any:
+        reader_name = self._resolve_capability(reader)
         if key not in FIELD_OWNERSHIP:
             raise GuardrailViolationError(
                 f"unregistered EventContext field: {key!r}",
                 error_code="working_memory_unauthorized_write",
-                details={"event_id": event_id, "key": key, "reader": reader},
+                details={"event_id": event_id, "key": key, "reader": reader_name},
             )
         value = await self._store.get(event_id, key)
         self._record_access(
             event_id,
-            agent_name=reader,
+            agent_name=reader_name,
             op="read",
             key=key,
             allowed=True,
         )
         return value
 
-    async def write(self, event_id: str, key: str, value: Any, writer: str) -> None:
+    async def write(
+        self,
+        event_id: str,
+        key: str,
+        value: Any,
+        writer: WriterCapability,
+    ) -> None:
+        writer_name = self._capability_label(writer)
         if key not in FIELD_OWNERSHIP:
-            self._record_access(event_id, agent_name=writer, op="write", key=key, allowed=False)
+            self._record_access(
+                event_id,
+                agent_name=writer_name,
+                op="write",
+                key=key,
+                allowed=False,
+            )
             raise GuardrailViolationError(
                 f"unregistered EventContext field: {key!r}",
                 error_code="working_memory_unauthorized_write",
-                details={"event_id": event_id, "key": key, "writer": writer},
+                details={"event_id": event_id, "key": key, "writer": writer_name},
             )
 
         owner = FIELD_OWNERSHIP[key]
-        canonical = normalize_writer(writer)
+        canonical = self._resolve_capability(writer)
         if canonical != owner:
-            self._record_access(event_id, agent_name=writer, op="write", key=key, allowed=False)
-            if self._wm_strict:
-                raise GuardrailViolationError(
-                    f"writer {writer!r} is not owner of {key!r} (owner={owner!r})",
-                    error_code="working_memory_unauthorized_write",
-                    details={
-                        "event_id": event_id,
-                        "key": key,
-                        "writer": writer,
-                        "owner": owner,
-                    },
-                )
-            logger.warning(
-                "WM_STRICT=false: allowing non-owner write event_id=%s key=%s writer=%s owner=%s",
+            self._record_access(
                 event_id,
-                key,
-                writer,
-                owner,
+                agent_name=canonical,
+                op="write",
+                key=key,
+                allowed=False,
+            )
+            raise GuardrailViolationError(
+                f"writer {canonical!r} is not owner of {key!r} (owner={owner!r})",
+                error_code="working_memory_unauthorized_write",
+                details={
+                    "event_id": event_id,
+                    "key": key,
+                    "writer": canonical,
+                    "owner": owner,
+                },
             )
 
         await self._write_with_version_retry(event_id, key, value)
-        self._record_access(event_id, agent_name=writer, op="write", key=key, allowed=True)
+        self._record_access(event_id, agent_name=canonical, op="write", key=key, allowed=True)
 
-    async def append_scratchpad(self, event_id: str, agent_name: str, note: str) -> None:
+    async def append_scratchpad(
+        self,
+        event_id: str,
+        note: str,
+        *,
+        writer: WriterCapability,
+    ) -> None:
+        agent_name = self._resolve_capability(writer)
         entry = ScratchpadEntry(
             agent_name=agent_name,
             timestamp=datetime.now(UTC),
             note=note,
         )
-        current = await self._store.get(event_id, "scratchpad")
-        entries: list[Any]
-        if isinstance(current, list):
-            entries = list(current)
-        else:
-            entries = []
-        entries.append(entry.model_dump(mode="json"))
-        if len(entries) > SCRATCHPAD_LIMIT:
-            entries = entries[-SCRATCHPAD_LIMIT:]
+        serialized = entry.model_dump(mode="json")
 
-        await self.write(event_id, "scratchpad", entries, writer="WorkingMemory")
+        def append_to(current: Any) -> list[Any]:
+            entries = list(current) if isinstance(current, list) else []
+            entries.append(serialized)
+            return entries[-SCRATCHPAD_LIMIT:]
+
+        entries = await self._write_with_version_retry(
+            event_id,
+            "scratchpad",
+            transform=append_to,
+        )
+        self._record_access(
+            event_id,
+            agent_name=agent_name,
+            op="write",
+            key="scratchpad",
+            allowed=True,
+        )
         await self._mirror_wm_scratchpad(event_id, entries)
 
-    async def read_scratchpad(self, event_id: str) -> list[ScratchpadEntry]:
-        raw = await self.read(event_id, "scratchpad", reader="WorkingMemory")
+    async def read_scratchpad(
+        self,
+        event_id: str,
+        *,
+        reader: WriterCapability,
+    ) -> list[ScratchpadEntry]:
+        raw = await self.read(event_id, "scratchpad", reader=reader)
         if not raw:
             return []
         if not isinstance(raw, list):
@@ -202,6 +287,22 @@ class WorkingMemory:
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
+
+    def _resolve_capability(self, capability: WriterCapability) -> str:
+        try:
+            return self._issued_capabilities[capability]
+        except (KeyError, TypeError) as exc:
+            raise GuardrailViolationError(
+                "unrecognized working-memory writer capability",
+                error_code="working_memory_unauthorized_write",
+                details={"writer": self._capability_label(capability)},
+            ) from exc
+
+    @staticmethod
+    def _capability_label(capability: object) -> str:
+        if isinstance(capability, WriterCapability):
+            return capability.owner
+        return f"<invalid:{type(capability).__name__}>"
 
     def _record_access(
         self,
@@ -221,22 +322,33 @@ class WorkingMemory:
         )
         self._access_logs.setdefault(event_id, []).append(log)
 
-    async def _write_with_version_retry(self, event_id: str, key: str, value: Any) -> None:
-        """Write via CAS when a version exists; retry on conflict; else ``set``."""
+    async def _write_with_version_retry(
+        self,
+        event_id: str,
+        key: str,
+        value: Any = None,
+        *,
+        transform: Callable[[Any], Any] | None = None,
+    ) -> Any:
+        """CAS a value, recomputing mutations from the latest DB value on conflict."""
         last_conflict = False
         for attempt in range(WRITE_CAS_MAX_ATTEMPTS):
-            expected = await self._read_field_version(event_id, key)
-            if expected is None:
-                result = await self._store.set(event_id, key, value)
-                await self._maybe_mark_redis_unavailable(event_id, result.redis_ok)
-                return
-
-            ok = await self._store.compare_and_set(event_id, key, expected, value)
+            if transform is None:
+                expected = await self._read_field_version(event_id, key)
+            else:
+                current, expected = await self._store.get_versioned_field(event_id, key)
+                value = transform(current)
+            ok = await self._store.compare_and_set(
+                event_id,
+                key,
+                expected or 0,
+                value,
+            )
             if ok:
                 # compare_and_set does not return redis_ok; probe after success.
                 redis_ok = await self._redis.ping()
                 await self._maybe_mark_redis_unavailable(event_id, redis_ok)
-                return
+                return value
             last_conflict = True
             logger.info(
                 "WorkingMemory CAS conflict event_id=%s key=%s attempt=%s",

@@ -120,3 +120,54 @@ class Action(BaseModel):
         elif self.execution_phase is not ActionExecutionPhase.IMMEDIATE:
             raise ValueError("only update_source_event_disposition may be POST_VERIFY")
         return self
+
+    @model_validator(mode="after")
+    def _enforce_writeback_consistency(self) -> Action:
+        """Reject impossible writeback field combinations (ISSUE-093 §3).
+
+        ``writeback_required`` is a policy snapshot and must never be reverse
+        -driven by capability; these rules only police *internal* consistency
+        between required / applicable / readiness / status on a single Action.
+        """
+        if not self.writeback_required:
+            if self.writeback_applicable:
+                raise ValueError(
+                    "writeback_required=false forbids writeback_applicable=true"
+                )
+            if self.writeback_readiness is not WritebackReadiness.NOT_REQUIRED:
+                raise ValueError(
+                    "writeback_required=false requires writeback_readiness=NOT_REQUIRED"
+                )
+            if self.writeback_status is not None:
+                raise ValueError("writeback_required=false requires writeback_status=null")
+            return self
+
+        # writeback_required=True from here on.
+        if not self.writeback_applicable:
+            # The obligation exists at the event level but does not land on
+            # this specific action (e.g. it targets no writable source object).
+            if self.writeback_readiness is not WritebackReadiness.NOT_REQUIRED:
+                raise ValueError(
+                    "writeback_applicable=false requires writeback_readiness=NOT_REQUIRED"
+                )
+            if self.writeback_status is not None:
+                raise ValueError("writeback_applicable=false requires writeback_status=null")
+            return self
+
+        # writeback_required=True and writeback_applicable=True: readiness must
+        # reflect a real (non-NOT_REQUIRED) state, and a status may only exist
+        # once the writeback is actually READY to be (or has been) attempted.
+        if self.writeback_readiness is WritebackReadiness.NOT_REQUIRED:
+            raise ValueError(
+                "writeback_required=true and writeback_applicable=true forbid "
+                "writeback_readiness=NOT_REQUIRED"
+            )
+        if (
+            self.writeback_readiness is not WritebackReadiness.READY
+            and self.writeback_status is not None
+        ):
+            raise ValueError(
+                f"writeback_readiness={self.writeback_readiness.value} blocks any "
+                "writeback attempt; writeback_status must be null"
+            )
+        return self

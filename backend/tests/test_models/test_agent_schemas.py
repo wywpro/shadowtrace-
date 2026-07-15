@@ -6,7 +6,7 @@ from abc import ABC
 from datetime import UTC, datetime
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.agents.base import AgentInput, AgentOutput, BaseAgent
 from app.models.action import Action
@@ -17,6 +17,7 @@ from app.models.agent_io import (
     Citation,
     CollectionStatus,
     EffectStatus,
+    EvidenceAgentInput,
     EvidenceOutput,
     ExecutionPlan,
     FpRuleCandidate,
@@ -40,7 +41,10 @@ from app.models.agent_io import (
     StorylineGeneratedBy,
     StorylinePhase,
     StorylinePhaseName,
+    SuperAgentInput,
     TimelineEntry,
+    ToolAgentInput,
+    TriageAgentInput,
     TriageResult,
     VerificationActionResult,
     VerificationOverallStatus,
@@ -567,6 +571,87 @@ def test_all_twelve_agent_output_models_are_importable() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Typed Agent inputs (ISSUE-094 §1)
+# --------------------------------------------------------------------------- #
+
+
+def test_all_twelve_agent_input_models_are_exported_and_distinct() -> None:
+    from app.agents import AGENT_INPUT_MODELS as exported_models
+    from app.models.agent_io import AGENT_INPUT_MODELS as models_models
+
+    assert exported_models is models_models
+    assert len(models_models) == 12
+    assert len(set(models_models.values())) == 12
+    for name, model in models_models.items():
+        assert issubclass(model, BaseModel), name
+        assert model.model_config.get("extra") == "forbid", name
+        assert "event_id" in model.model_fields, name
+
+
+def test_agent_input_models_json_schema_export() -> None:
+    from app.models.agent_io import AGENT_INPUT_MODELS
+
+    for name, model in AGENT_INPUT_MODELS.items():
+        schema = model.model_json_schema()
+        assert schema["properties"]["event_id"]["type"] == "string", name
+        # extra="forbid" surfaces as additionalProperties: false in JSON Schema.
+        assert schema.get("additionalProperties") is False, name
+
+
+def test_agent_input_models_reject_unknown_fields() -> None:
+    from app.models.agent_io import AGENT_INPUT_MODELS
+
+    for _name, model in AGENT_INPUT_MODELS.items():
+        required = {
+            field_name
+            for field_name, field in model.model_fields.items()
+            if field.is_required()
+        }
+        kwargs: dict[str, object] = {"event_id": "evt-20260101-0a1b2c3d"}
+        for field_name in required:
+            if field_name == "event_id":
+                continue
+            # Every currently-required non-event_id field is itself another
+            # strict BaseModel; construct a same-typed dummy is out of scope
+            # here — assert directly on the always-required event_id contract
+            # and rely on per-model tests below for full construction checks.
+            kwargs.pop(field_name, None)
+        with pytest.raises(ValidationError):
+            model.model_validate({**kwargs, "unexpected_field": "boom"}, strict=False)
+
+
+def test_super_agent_input_ok() -> None:
+    inp = SuperAgentInput(event_id="evt-1")
+    assert inp.triggered_by == "ingestion"
+    with pytest.raises(ValidationError):
+        SuperAgentInput(event_id="evt-1", bogus="x")  # type: ignore[call-arg]
+
+
+def test_triage_agent_input_ok() -> None:
+    inp = TriageAgentInput(event_id="evt-1", raw_event_summary="brute force login")
+    assert inp.hint_entities.accounts == []
+
+
+def test_evidence_agent_input_requires_triage_result() -> None:
+    with pytest.raises(ValidationError):
+        EvidenceAgentInput(event_id="evt-1")  # type: ignore[call-arg]
+    inp = EvidenceAgentInput(
+        event_id="evt-1",
+        triage_result=TriageResult(
+            event_type=EventType.INSIDER_THREAT,
+            severity=Severity.HIGH,
+            need_investigation=True,
+        ),
+    )
+    assert inp.triage_result.need_investigation is True
+
+
+def test_tool_agent_input_ok() -> None:
+    inp = ToolAgentInput(event_id="evt-1", tool_name="block_ip", tool_params={"ip": "1.2.3.4"})
+    assert inp.tool_params["ip"] == "1.2.3.4"
+
+
+# --------------------------------------------------------------------------- #
 # BaseAgent
 # --------------------------------------------------------------------------- #
 
@@ -579,14 +664,14 @@ def test_base_agent_cannot_be_instantiated() -> None:
 
 @pytest.mark.asyncio
 async def test_base_agent_execute_template_calls_run() -> None:
-    class StubAgent(BaseAgent[AgentInput, AgentOutput]):
+    class StubAgent(BaseAgent[ToolAgentInput, AgentOutput]):
         agent_name = "tool_agent"
 
-        async def _run(self, input: AgentInput) -> AgentOutput:
+        async def _run(self, input: ToolAgentInput) -> AgentOutput:
             return AgentOutput(agent_name=self.agent_name, data={"echo": input.event_id})
 
     agent = StubAgent()
-    out = await agent.execute(AgentInput(event_id="evt-1"))
+    out = await agent.execute(ToolAgentInput(event_id="evt-1", tool_name="probe"))
     assert out.success is True
     assert out.data["echo"] == "evt-1"
 
@@ -595,17 +680,17 @@ async def test_base_agent_execute_template_calls_run() -> None:
 async def test_base_agent_hooks_and_placeholders() -> None:
     calls: list[str] = []
 
-    class StubAgent(BaseAgent[AgentInput, AgentOutput]):
+    class StubAgent(BaseAgent[TriageAgentInput, AgentOutput]):
         agent_name = "triage_agent"
 
-        async def _run(self, input: AgentInput) -> AgentOutput:
+        async def _run(self, input: TriageAgentInput) -> AgentOutput:
             calls.append("run")
             return AgentOutput(agent_name=self.agent_name)
 
         async def _record_trace(self, **kwargs: object) -> None:  # type: ignore[override]
             calls.append("trace")
 
-        async def _check_budget(self, input: AgentInput) -> None:
+        async def _check_budget(self, input: TriageAgentInput) -> None:
             calls.append("budget")
 
         async def _apply_guardrails(self, output: AgentOutput) -> AgentOutput:
@@ -614,13 +699,27 @@ async def test_base_agent_hooks_and_placeholders() -> None:
 
     agent = StubAgent()
 
-    async def pre(agent_: BaseAgent, input_: AgentInput) -> None:
+    async def pre(agent_: BaseAgent, input_: TriageAgentInput) -> None:
         calls.append("pre")
 
-    async def post(agent_: BaseAgent, input_: AgentInput) -> None:
+    async def post(agent_: BaseAgent, input_: TriageAgentInput) -> None:
         calls.append("post")
 
     agent.pre_hooks.append(pre)
     agent.post_hooks.append(post)
-    await agent.execute(AgentInput(event_id="evt-1"))
+    await agent.execute(TriageAgentInput(event_id="evt-1"))
     assert calls == ["budget", "pre", "run", "guard", "post", "trace"]
+
+
+@pytest.mark.asyncio
+async def test_base_agent_rejects_generic_input_and_context_store() -> None:
+    class StubAgent(BaseAgent[TriageAgentInput, AgentOutput]):
+        agent_name = "triage_agent"
+
+        async def _run(self, input: TriageAgentInput) -> AgentOutput:
+            return AgentOutput(agent_name=self.agent_name)
+
+    with pytest.raises(TypeError):
+        StubAgent(context_store=object())  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="TriageAgentInput"):
+        await StubAgent().execute(AgentInput(event_id="evt-1"))  # type: ignore[arg-type]

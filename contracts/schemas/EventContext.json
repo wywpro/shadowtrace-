@@ -1,73 +1,5 @@
 {
   "$defs": {
-    "AccountEntity": {
-      "additionalProperties": false,
-      "properties": {
-        "entity_id": {
-          "title": "Entity Id",
-          "type": "string"
-        },
-        "source_refs": {
-          "items": {
-            "$ref": "#/$defs/SourceReference"
-          },
-          "title": "Source Refs",
-          "type": "array"
-        },
-        "attributes": {
-          "additionalProperties": true,
-          "title": "Attributes",
-          "type": "object"
-        },
-        "entity_type": {
-          "const": "account",
-          "default": "account",
-          "title": "Entity Type",
-          "type": "string"
-        },
-        "username": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Username"
-        },
-        "domain": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Domain"
-        },
-        "display_name": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Display Name"
-        }
-      },
-      "required": [
-        "entity_id"
-      ],
-      "title": "AccountEntity",
-      "type": "object"
-    },
     "ActionExecutionJob": {
       "additionalProperties": false,
       "properties": {
@@ -584,100 +516,6 @@
       "title": "DispositionReceipt",
       "type": "object"
     },
-    "DomainEntity": {
-      "additionalProperties": false,
-      "properties": {
-        "entity_id": {
-          "title": "Entity Id",
-          "type": "string"
-        },
-        "source_refs": {
-          "items": {
-            "$ref": "#/$defs/SourceReference"
-          },
-          "title": "Source Refs",
-          "type": "array"
-        },
-        "attributes": {
-          "additionalProperties": true,
-          "title": "Attributes",
-          "type": "object"
-        },
-        "entity_type": {
-          "const": "domain",
-          "default": "domain",
-          "title": "Entity Type",
-          "type": "string"
-        },
-        "fqdn": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Fqdn"
-        }
-      },
-      "required": [
-        "entity_id"
-      ],
-      "title": "DomainEntity",
-      "type": "object"
-    },
-    "EntitySet": {
-      "additionalProperties": false,
-      "description": "Container of the six entity categories.",
-      "properties": {
-        "accounts": {
-          "items": {
-            "$ref": "#/$defs/AccountEntity"
-          },
-          "title": "Accounts",
-          "type": "array"
-        },
-        "hosts": {
-          "items": {
-            "$ref": "#/$defs/HostEntity"
-          },
-          "title": "Hosts",
-          "type": "array"
-        },
-        "ips": {
-          "items": {
-            "$ref": "#/$defs/IPEntity"
-          },
-          "title": "Ips",
-          "type": "array"
-        },
-        "domains": {
-          "items": {
-            "$ref": "#/$defs/DomainEntity"
-          },
-          "title": "Domains",
-          "type": "array"
-        },
-        "processes": {
-          "items": {
-            "$ref": "#/$defs/ProcessEntity"
-          },
-          "title": "Processes",
-          "type": "array"
-        },
-        "files": {
-          "items": {
-            "$ref": "#/$defs/FileEntity"
-          },
-          "title": "Files",
-          "type": "array"
-        }
-      },
-      "title": "EntitySet",
-      "type": "object"
-    },
     "EventStatus": {
       "description": "ShadowTrace internal investigation orchestration state (14 states).",
       "enum": [
@@ -698,6 +536,125 @@
       ],
       "title": "EventStatus",
       "type": "string"
+    },
+    "EventSummary": {
+      "additionalProperties": false,
+      "description": "The authoritative shape of ``EventContext.event`` (ISSUE-094 §2).",
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "$ref": "#/$defs/EventType"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/EventStatus"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "risk_score": {
+          "title": "Risk Score",
+          "type": "integer"
+        },
+        "final_verdict": {
+          "$ref": "#/$defs/FinalVerdict"
+        },
+        "writeback_required": {
+          "title": "Writeback Required",
+          "type": "boolean"
+        },
+        "writeback_readiness": {
+          "$ref": "#/$defs/WritebackReadiness"
+        },
+        "writeback_overall_status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WritebackStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pending_writeback_count": {
+          "default": 0,
+          "title": "Pending Writeback Count",
+          "type": "integer"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        },
+        "occurred_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Occurred At"
+        },
+        "disposition_policy": {
+          "$ref": "#/$defs/DispositionPolicy"
+        },
+        "external_unsynced": {
+          "default": false,
+          "title": "External Unsynced",
+          "type": "boolean"
+        },
+        "escalated": {
+          "default": false,
+          "title": "Escalated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "event_id",
+        "event_type",
+        "title",
+        "status",
+        "severity",
+        "risk_score",
+        "final_verdict",
+        "writeback_required",
+        "writeback_readiness",
+        "disposition_policy"
+      ],
+      "title": "EventSummary",
+      "type": "object"
     },
     "EventType": {
       "description": "Supported security event types (intro §1); extensible via scenario packs.",
@@ -868,74 +825,6 @@
       "title": "ExecutionSummary",
       "type": "object"
     },
-    "FileEntity": {
-      "additionalProperties": false,
-      "properties": {
-        "entity_id": {
-          "title": "Entity Id",
-          "type": "string"
-        },
-        "source_refs": {
-          "items": {
-            "$ref": "#/$defs/SourceReference"
-          },
-          "title": "Source Refs",
-          "type": "array"
-        },
-        "attributes": {
-          "additionalProperties": true,
-          "title": "Attributes",
-          "type": "object"
-        },
-        "entity_type": {
-          "const": "file",
-          "default": "file",
-          "title": "Entity Type",
-          "type": "string"
-        },
-        "path": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Path"
-        },
-        "name": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Name"
-        },
-        "hash": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Hash"
-        }
-      },
-      "required": [
-        "entity_id"
-      ],
-      "title": "FileEntity",
-      "type": "object"
-    },
     "FinalVerdict": {
       "description": "Verdict label, independent from EventStatus.",
       "enum": [
@@ -946,128 +835,6 @@
       ],
       "title": "FinalVerdict",
       "type": "string"
-    },
-    "HostEntity": {
-      "additionalProperties": false,
-      "properties": {
-        "entity_id": {
-          "title": "Entity Id",
-          "type": "string"
-        },
-        "source_refs": {
-          "items": {
-            "$ref": "#/$defs/SourceReference"
-          },
-          "title": "Source Refs",
-          "type": "array"
-        },
-        "attributes": {
-          "additionalProperties": true,
-          "title": "Attributes",
-          "type": "object"
-        },
-        "entity_type": {
-          "const": "host",
-          "default": "host",
-          "title": "Entity Type",
-          "type": "string"
-        },
-        "hostname": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Hostname"
-        },
-        "ip": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Ip"
-        },
-        "os": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Os"
-        }
-      },
-      "required": [
-        "entity_id"
-      ],
-      "title": "HostEntity",
-      "type": "object"
-    },
-    "IPEntity": {
-      "additionalProperties": false,
-      "properties": {
-        "entity_id": {
-          "title": "Entity Id",
-          "type": "string"
-        },
-        "source_refs": {
-          "items": {
-            "$ref": "#/$defs/SourceReference"
-          },
-          "title": "Source Refs",
-          "type": "array"
-        },
-        "attributes": {
-          "additionalProperties": true,
-          "title": "Attributes",
-          "type": "object"
-        },
-        "entity_type": {
-          "const": "ip",
-          "default": "ip",
-          "title": "Entity Type",
-          "type": "string"
-        },
-        "address": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Address"
-        },
-        "scope": {
-          "default": "unknown",
-          "enum": [
-            "external",
-            "internal",
-            "unknown"
-          ],
-          "title": "Scope",
-          "type": "string"
-        }
-      },
-      "required": [
-        "entity_id"
-      ],
-      "title": "IPEntity",
-      "type": "object"
     },
     "ImpactAssessment": {
       "additionalProperties": false,
@@ -1216,86 +983,6 @@
       "title": "InvestigationReport",
       "type": "object"
     },
-    "ProcessEntity": {
-      "additionalProperties": false,
-      "properties": {
-        "entity_id": {
-          "title": "Entity Id",
-          "type": "string"
-        },
-        "source_refs": {
-          "items": {
-            "$ref": "#/$defs/SourceReference"
-          },
-          "title": "Source Refs",
-          "type": "array"
-        },
-        "attributes": {
-          "additionalProperties": true,
-          "title": "Attributes",
-          "type": "object"
-        },
-        "entity_type": {
-          "const": "process",
-          "default": "process",
-          "title": "Entity Type",
-          "type": "string"
-        },
-        "name": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Name"
-        },
-        "pid": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Pid"
-        },
-        "command_line": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Command Line"
-        },
-        "hash": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Hash"
-        }
-      },
-      "required": [
-        "entity_id"
-      ],
-      "title": "ProcessEntity",
-      "type": "object"
-    },
     "RecordCompensationParams": {
       "additionalProperties": false,
       "description": "Params for COMPENSATION_RECORD (rollback compensation sync).",
@@ -1376,226 +1063,6 @@
         "title"
       ],
       "title": "ReportSection",
-      "type": "object"
-    },
-    "SecurityEvent": {
-      "additionalProperties": false,
-      "properties": {
-        "event_id": {
-          "title": "Event Id",
-          "type": "string"
-        },
-        "event_type": {
-          "$ref": "#/$defs/EventType"
-        },
-        "title": {
-          "title": "Title",
-          "type": "string"
-        },
-        "description": {
-          "default": "",
-          "title": "Description",
-          "type": "string"
-        },
-        "status": {
-          "$ref": "#/$defs/EventStatus",
-          "default": "new"
-        },
-        "severity": {
-          "$ref": "#/$defs/Severity",
-          "default": "low"
-        },
-        "risk_score": {
-          "default": 0,
-          "maximum": 100,
-          "minimum": 0,
-          "title": "Risk Score",
-          "type": "integer"
-        },
-        "confidence": {
-          "default": 0.0,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Confidence",
-          "type": "number"
-        },
-        "final_verdict": {
-          "$ref": "#/$defs/FinalVerdict",
-          "default": "none"
-        },
-        "entities": {
-          "$ref": "#/$defs/EntitySet"
-        },
-        "creation_source_ref": {
-          "$ref": "#/$defs/SourceReference"
-        },
-        "source_reference_snapshots": {
-          "items": {
-            "$ref": "#/$defs/SourceReference"
-          },
-          "title": "Source Reference Snapshots",
-          "type": "array"
-        },
-        "current_primary_source_record_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Current Primary Source Record Id"
-        },
-        "disposition_source_ref": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/SourceObjectLocator"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "disposition_policy": {
-          "$ref": "#/$defs/DispositionPolicy",
-          "default": "not_required"
-        },
-        "raw_alert_ids": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Raw Alert Ids",
-          "type": "array"
-        },
-        "raw_alert_snapshot": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Raw Alert Snapshot"
-        },
-        "source_type": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Source Type"
-        },
-        "occurred_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Occurred At"
-        },
-        "created_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Created At"
-        },
-        "updated_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Updated At"
-        },
-        "closed_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Closed At"
-        },
-        "replan_count": {
-          "default": 0,
-          "title": "Replan Count",
-          "type": "integer"
-        },
-        "degraded_flags": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Degraded Flags",
-          "type": "array"
-        },
-        "escalated": {
-          "default": false,
-          "title": "Escalated",
-          "type": "boolean"
-        },
-        "external_unsynced": {
-          "default": false,
-          "title": "External Unsynced",
-          "type": "boolean"
-        },
-        "event_context_snapshot": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Event Context Snapshot"
-        },
-        "row_version": {
-          "default": 1,
-          "minimum": 1,
-          "title": "Row Version",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "event_id",
-        "event_type",
-        "title",
-        "creation_source_ref"
-      ],
-      "title": "SecurityEvent",
       "type": "object"
     },
     "SetEventDispositionParams": {
@@ -1771,135 +1238,6 @@
         }
       },
       "title": "SourceObjectState",
-      "type": "object"
-    },
-    "SourceReference": {
-      "additionalProperties": false,
-      "description": "Immutable snapshot reference to an external source object (intro §4.3).\n\nIdentity five-tuple is\n``(source_product, source_tenant_id, connector_id, source_kind, source_object_id)``.\nThe adapter-native ``source_object_type`` and opaque ``source_concurrency_token``\ndo NOT participate in identity.",
-      "properties": {
-        "source_kind": {
-          "$ref": "#/$defs/SourceObjectKind"
-        },
-        "source_product": {
-          "title": "Source Product",
-          "type": "string"
-        },
-        "source_tenant_id": {
-          "title": "Source Tenant Id",
-          "type": "string"
-        },
-        "connector_id": {
-          "title": "Connector Id",
-          "type": "string"
-        },
-        "source_object_type": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Source Object Type"
-        },
-        "source_object_id": {
-          "title": "Source Object Id",
-          "type": "string"
-        },
-        "parent_source_object_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Parent Source Object Id"
-        },
-        "source_status_raw": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Source Status Raw"
-        },
-        "source_disposition": {
-          "$ref": "#/$defs/SourceDisposition",
-          "default": "unknown"
-        },
-        "source_concurrency_token": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Source Concurrency Token"
-        },
-        "source_updated_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Source Updated At"
-        },
-        "schema_version": {
-          "default": "1",
-          "title": "Schema Version",
-          "type": "string"
-        },
-        "ingested_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Ingested At"
-        },
-        "raw_payload_hash": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Raw Payload Hash"
-        }
-      },
-      "required": [
-        "source_kind",
-        "source_product",
-        "source_tenant_id",
-        "connector_id",
-        "source_object_id"
-      ],
-      "title": "SourceReference",
       "type": "object"
     },
     "SubmitEntityActionParams": {
@@ -2290,7 +1628,7 @@
     "event": {
       "anyOf": [
         {
-          "$ref": "#/$defs/SecurityEvent"
+          "$ref": "#/$defs/EventSummary"
         },
         {
           "type": "null"

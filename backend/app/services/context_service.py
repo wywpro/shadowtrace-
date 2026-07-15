@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -38,6 +38,42 @@ CTX_LOG_PREFIX = "shadowtrace:ctx_log:"
 CLOSED_TTL_SECONDS = 24 * 60 * 60
 DEGRADED_CACHE_TTL_SECONDS = 30.0
 REDIS_WRITE_BACKOFFS = (0.1, 0.5, 2.0)
+
+# Event-level aggregate priority for DispositionOutbox/Receipt statuses (ISSUE-093
+# §3): the most attention-needing state wins whenever several outboxes disagree.
+# CONFIRMED (fully done) is deliberately least-severe; PARTIAL (some confirmed,
+# some not) ranks just above it since the cycle is not fully settled yet.
+STATUS_AGGREGATE_PRIORITY: tuple[WritebackStatus, ...] = (
+    WritebackStatus.CONFLICT,
+    WritebackStatus.UNKNOWN,
+    WritebackStatus.PENDING,
+    WritebackStatus.SENDING,
+    WritebackStatus.ACCEPTED,
+    WritebackStatus.FAILED,
+    WritebackStatus.PARTIAL,
+    WritebackStatus.CONFIRMED,
+)
+
+# Event-level aggregate priority for per-Action WritebackReadiness: the worst
+# (most blocking) reason present among applicable-required actions wins.
+READINESS_AGGREGATE_PRIORITY: tuple[WritebackReadiness, ...] = (
+    WritebackReadiness.PERMISSION_DENIED,
+    WritebackReadiness.CONNECTOR_UNAVAILABLE,
+    WritebackReadiness.CAPABILITY_UNSUPPORTED,
+    WritebackReadiness.CAPABILITY_UNKNOWN,
+    WritebackReadiness.NOT_CONFIGURED,
+    WritebackReadiness.SOURCE_UNRESOLVED,
+    WritebackReadiness.READY,
+    WritebackReadiness.NOT_REQUIRED,
+)
+
+
+def _pick_by_priority(present: set[Any], priority: tuple[Any, ...]) -> Any | None:
+    """Return the highest-priority (first-listed) member of ``priority`` present."""
+    for candidate in priority:
+        if candidate in present:
+            return candidate
+    return None
 
 # EventContext Hash field names (excludes companion ``{key}__version`` keys).
 CONTEXT_FIELD_NAMES: frozenset[str] = frozenset(EventContext.model_fields.keys())
@@ -135,20 +171,13 @@ def _context_as_dict(ctx: EventContext) -> dict[str, Any]:
 
 
 def _assemble_event_context(raw: dict[str, Any]) -> EventContext:
-    """Build EventContext; ``event`` may be EventSummary-shaped (not SecurityEvent)."""
-    event_raw = raw.get("event")
-    payload = {k: v for k, v in raw.items() if k != "event" and k in CONTEXT_FIELD_NAMES}
+    """Build EventContext, always validating (ISSUE-094 §2: no ``model_construct``
+    bypass). ``event`` is typed as ``EventSummary | None`` so the EventSummary-shaped
+    dict persisted by the journal/Redis/snapshot paths validates directly."""
+    payload = {k: v for k, v in raw.items() if k in CONTEXT_FIELD_NAMES}
     base = _default_context_dict()
     base.update(payload)
-    base["event"] = None
-    try:
-        ctx = EventContext.model_validate(base)
-    except ValidationError:
-        ctx = EventContext.model_construct(**base)
-    if event_raw is not None:
-        # ISSUE-013 stores EventSummary under ``event``; avoid SecurityEvent validation.
-        return EventContext.model_construct(**{**_context_as_dict(ctx), "event": event_raw})
-    return ctx
+    return EventContext.model_validate(base)
 
 
 class EventContextStore:
@@ -230,6 +259,14 @@ class EventContextStore:
             client = self._redis.get_client()
             raw = await client.hget(ctx_key(event_id), key)
             if raw is not None:
+                raw_version = await client.hget(ctx_key(event_id), version_field(key))
+                redis_version = (
+                    int(RedisClient.loads(raw_version)) if raw_version is not None else None
+                )
+                db_version = await self.get_field_version(event_id, key)
+                if db_version is None or redis_version != db_version:
+                    ctx = await self.rebuild_context(event_id)
+                    return getattr(ctx, key)
                 return RedisClient.loads(raw)
             ctx = await self.rebuild_context(event_id)
             return getattr(ctx, key)
@@ -270,7 +307,7 @@ class EventContextStore:
         # Keep degraded memory view coherent when Redis is down.
         if not redis_ok and event_id in self._degraded_cache:
             current = self._degraded_cache[event_id]
-            updated = EventContext.model_construct(**{**_context_as_dict(current), key: value})
+            updated = EventContext.model_validate({**_context_as_dict(current), key: value})
             self._degraded_cache[event_id] = updated
             self._degraded_cache_ts[event_id] = time.monotonic()
 
@@ -284,6 +321,12 @@ class EventContextStore:
             if raw_hash:
                 decoded = self._decode_hash(raw_hash)
                 if any(k in CONTEXT_FIELD_NAMES for k in decoded):
+                    db_versions = await self._load_current_field_versions(event_id)
+                    if any(
+                        decoded.get(version_field(field_name)) != db_version
+                        for field_name, db_version in db_versions.items()
+                    ):
+                        return await self.rebuild_context(event_id)
                     return _assemble_event_context(decoded)
             return await self.rebuild_context(event_id)
 
@@ -305,20 +348,32 @@ class EventContextStore:
         stored = _journal_value(value)
         async with self._session_factory() as session:
             async with session.begin():
-                result = await session.execute(
-                    text(
-                        "UPDATE event_context_field_version "
-                        "SET current_version = current_version + 1 "
-                        "WHERE event_id = :event_id AND field_name = :field_name "
-                        "AND current_version = :expected "
-                        "RETURNING current_version"
-                    ),
-                    {
-                        "event_id": event_id,
-                        "field_name": key,
-                        "expected": expected_version,
-                    },
-                )
+                if expected_version == 0:
+                    result = await session.execute(
+                        text(
+                            "INSERT INTO event_context_field_version "
+                            "(event_id, field_name, current_version) "
+                            "VALUES (:event_id, :field_name, 1) "
+                            "ON CONFLICT (event_id, field_name) DO NOTHING "
+                            "RETURNING current_version"
+                        ),
+                        {"event_id": event_id, "field_name": key},
+                    )
+                else:
+                    result = await session.execute(
+                        text(
+                            "UPDATE event_context_field_version "
+                            "SET current_version = current_version + 1 "
+                            "WHERE event_id = :event_id AND field_name = :field_name "
+                            "AND current_version = :expected "
+                            "RETURNING current_version"
+                        ),
+                        {
+                            "event_id": event_id,
+                            "field_name": key,
+                            "expected": expected_version,
+                        },
+                    )
                 row = result.first()
                 if row is None:
                     return False
@@ -353,19 +408,17 @@ class EventContextStore:
             # Always overlay authoritative mirrors from security_event.
             summary = event_summary_from_security_event(se)
             flags = list(se.degraded_flags or [])
+            writeback = await self._merge_writeback_summary(session, se)
             merged = _context_as_dict(ctx)
             merged.update(
                 {
-                    "event": summary.model_dump(mode="json"),
+                    "event": summary,
                     "degraded_flags": [str(f) for f in flags],
                     "replan_count": int(se.replan_count or 0),
+                    "writeback_summary": writeback,
                 }
             )
-            ctx = EventContext.model_construct(**merged)
-            writeback = await self._merge_writeback_summary(session, se, ctx)
-            ctx = EventContext.model_construct(
-                **{**_context_as_dict(ctx), "writeback_summary": writeback}
-            )
+            ctx = EventContext.model_validate(merged)
 
             versions = await self._load_field_versions(session, event_id)
 
@@ -423,19 +476,17 @@ class EventContextStore:
                 ctx = await self._rebuild_from_journal(session, event_id)
                 summary = event_summary_from_security_event(se)
                 flags = list(se.degraded_flags or [])
+                writeback = await self._merge_writeback_summary(session, se)
                 merged = _context_as_dict(ctx)
                 merged.update(
                     {
-                        "event": summary.model_dump(mode="json"),
+                        "event": summary,
                         "degraded_flags": [str(f) for f in flags],
                         "replan_count": int(se.replan_count or 0),
+                        "writeback_summary": writeback,
                     }
                 )
-                ctx = EventContext.model_construct(**merged)
-                writeback = await self._merge_writeback_summary(session, se, ctx)
-                ctx = EventContext.model_construct(
-                    **{**_context_as_dict(ctx), "writeback_summary": writeback}
-                )
+                ctx = EventContext.model_validate(merged)
                 snapshot = {k: _to_jsonable(v) for k, v in _context_as_dict(ctx).items()}
                 snapshot["event"] = summary.model_dump(mode="json")
                 snapshot["writeback_summary"] = (
@@ -530,6 +581,33 @@ class EventContextStore:
             row = await session.get(orm.EventContextFieldVersion, (event_id, key))
             return int(row.current_version) if row is not None else None
 
+    async def get_versioned_field(self, event_id: str, key: str) -> tuple[Any, int]:
+        """Read a field value and its authoritative version in one DB statement."""
+        if key not in CONTEXT_FIELD_NAMES:
+            raise KeyError(f"unknown EventContext field: {key!r}")
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text(
+                    "SELECT journal.value, version.current_version "
+                    "FROM event_context_field_version AS version "
+                    "JOIN event_context_journal AS journal "
+                    "ON journal.event_id = version.event_id "
+                    "AND journal.field_name = version.field_name "
+                    "AND journal.version = version.current_version "
+                    "WHERE version.event_id = :event_id "
+                    "AND version.field_name = :field_name"
+                ),
+                {"event_id": event_id, "field_name": key},
+            )
+            row = result.first()
+        if row is None:
+            return None, 0
+        return self._unwrap_journal_value(row[0]), int(row[1])
+
+    async def _load_current_field_versions(self, event_id: str) -> dict[str, int]:
+        async with self._session_factory() as session:
+            return await self._load_field_versions(session, event_id)
+
     @staticmethod
     async def _load_field_versions(session: AsyncSession, event_id: str) -> dict[str, int]:
         rows = await session.execute(
@@ -611,26 +689,68 @@ class EventContextStore:
         self,
         session: AsyncSession,
         se: orm.SecurityEvent,
-        ctx: EventContext,
     ) -> WritebackSummary | None:
-        """Merge latest disposition_outbox / receipt state into writeback_summary."""
+        """Recompute the event-level WritebackSummary from Action + outbox rows.
+
+        Always derived fresh from persisted Action.writeback_* fields and
+        DispositionOutbox/Receipt rows — never carried forward from a stale
+        prior summary (no ``model_construct`` bypass, no "existing" fallback)
+        so every rebuild path (Redis miss, journal rebuild, CLOSED snapshot
+        refresh) converges on the same, unique correct readiness/status.
+        """
+        policy = DispositionPolicy(se.disposition_policy)
+
+        actions = (
+            await session.scalars(select(orm.Action).where(orm.Action.event_id == se.event_id))
+        ).all()
+        required_actions = [a for a in actions if a.writeback_required]
+        applicable_actions = [a for a in required_actions if a.writeback_applicable]
+
         outboxes = (
             await session.scalars(
                 select(orm.DispositionOutbox).where(orm.DispositionOutbox.event_id == se.event_id)
             )
         ).all()
-        if not outboxes and ctx.writeback_summary is None:
-            policy = DispositionPolicy(se.disposition_policy)
+
+        if not required_actions and not outboxes:
             if policy is DispositionPolicy.NOT_REQUIRED:
-                return WritebackSummary(
-                    event_id=se.event_id,
-                    closure_cycle=0,
-                    disposition_policy=policy,
-                    aggregate_readiness=WritebackReadiness.NOT_REQUIRED,
-                    external_unsynced=bool(se.external_unsynced),
-                    updated_at=datetime.now(UTC),
-                )
-            return ctx.writeback_summary
+                aggregate_readiness = WritebackReadiness.NOT_REQUIRED
+            else:
+                # REQUIRED policy but nothing has been planned yet: never
+                # invent READY from an empty action set — surface as unknown
+                # until a real Action/outbox exists to evaluate.
+                aggregate_readiness = WritebackReadiness.CAPABILITY_UNKNOWN
+            return WritebackSummary(
+                event_id=se.event_id,
+                closure_cycle=0,
+                disposition_policy=policy,
+                aggregate_readiness=aggregate_readiness,
+                external_unsynced=bool(se.external_unsynced),
+                updated_at=datetime.now(UTC),
+            )
+
+        readiness_counts: Counter[WritebackReadiness] = Counter()
+        blocked_action_ids: list[str] = []
+        for action in applicable_actions:
+            try:
+                readiness = WritebackReadiness(action.writeback_readiness)
+            except ValueError:
+                readiness = WritebackReadiness.CAPABILITY_UNKNOWN
+            readiness_counts[readiness] += 1
+            if readiness is not WritebackReadiness.READY:
+                blocked_action_ids.append(action.action_id)
+
+        if applicable_actions:
+            aggregate_readiness = _pick_by_priority(
+                set(readiness_counts), READINESS_AGGREGATE_PRIORITY
+            )
+            assert aggregate_readiness is not None
+        elif required_actions:
+            # Required policy, but no action is (yet) applicable to a writable
+            # source object — never invent READY from an empty applicable set.
+            aggregate_readiness = WritebackReadiness.CAPABILITY_UNKNOWN
+        else:
+            aggregate_readiness = WritebackReadiness.NOT_REQUIRED
 
         writeback_ids = {o.writeback_id for o in outboxes}
         receipts_by_wb: dict[str, orm.DispositionReceipt] = {}
@@ -683,50 +803,27 @@ class EventContextStore:
                     except ValueError:
                         terminal_event_disposition = None
 
-        aggregate_status: WritebackStatus | None = None
-        if status_counts:
-            if status_counts.get(WritebackStatus.CONFIRMED) and len(status_counts) == 1:
-                aggregate_status = WritebackStatus.CONFIRMED
-            elif status_counts.get(WritebackStatus.FAILED) and not status_counts.get(
-                WritebackStatus.CONFIRMED
-            ):
-                aggregate_status = WritebackStatus.FAILED
-            elif len(status_counts) > 1:
-                aggregate_status = WritebackStatus.PARTIAL
-            else:
-                aggregate_status = next(iter(status_counts))
+        aggregate_status = (
+            _pick_by_priority(set(status_counts), STATUS_AGGREGATE_PRIORITY)
+            if status_counts
+            else None
+        )
 
-        policy = DispositionPolicy(se.disposition_policy)
-        existing = ctx.writeback_summary
         return WritebackSummary(
             event_id=se.event_id,
-            closure_cycle=closure_cycle or (existing.closure_cycle if existing else 0),
+            closure_cycle=closure_cycle,
             disposition_policy=policy,
-            required_action_count=existing.required_action_count if existing else 0,
-            applicable_action_count=(
-                len(outboxes) or (existing.applicable_action_count if existing else 0)
-            ),
-            blocked_action_ids=list(existing.blocked_action_ids) if existing else [],
-            readiness_counts=dict(existing.readiness_counts) if existing else {},
-            aggregate_readiness=(
-                existing.aggregate_readiness
-                if existing
-                else (
-                    WritebackReadiness.READY
-                    if policy is DispositionPolicy.REQUIRED
-                    else WritebackReadiness.NOT_REQUIRED
-                )
-            ),
+            required_action_count=len(required_actions),
+            applicable_action_count=len(applicable_actions),
+            blocked_action_ids=blocked_action_ids,
+            readiness_counts=dict(readiness_counts),
+            aggregate_readiness=aggregate_readiness,
             writeback_counts=dict(status_counts),
             aggregate_status=aggregate_status,
-            terminal_event_action_id=terminal_event_action_id
-            or (existing.terminal_event_action_id if existing else None),
-            terminal_event_writeback_id=terminal_event_writeback_id
-            or (existing.terminal_event_writeback_id if existing else None),
-            terminal_event_disposition=terminal_event_disposition
-            or (existing.terminal_event_disposition if existing else None),
-            terminal_event_confirmed=terminal_event_confirmed
-            or (existing.terminal_event_confirmed if existing else False),
+            terminal_event_action_id=terminal_event_action_id,
+            terminal_event_writeback_id=terminal_event_writeback_id,
+            terminal_event_disposition=terminal_event_disposition,
+            terminal_event_confirmed=terminal_event_confirmed,
             external_unsynced=bool(se.external_unsynced),
             updated_at=datetime.now(UTC),
         )

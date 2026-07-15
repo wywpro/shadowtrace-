@@ -500,3 +500,152 @@ class InvestigationResult(BaseModel):
         elif self.writeback_readiness is WritebackReadiness.NOT_REQUIRED:
             raise ValueError("writeback_required=true forbids writeback_readiness=NOT_REQUIRED")
         return self
+
+
+# --------------------------------------------------------------------------- #
+# Agent inputs (ISSUE-094 §1)
+#
+# Each of the 12 Agents (intro §4.4) gets a dedicated, strictly-validated
+# input model instead of the generic ``AgentInput(event_id, data: dict)``
+# envelope. Fields carry the *typed* upstream stage output(s) that Agent
+# consumes; ``extra="forbid"`` rejects unknown/typo'd fields so a caller can
+# never smuggle an untyped payload through the inter-agent boundary.
+# The base ``AgentInput`` contains only ``event_id``; BaseAgent rejects that
+# base type at runtime and accepts only the dedicated class bound to its name.
+# --------------------------------------------------------------------------- #
+
+
+class AgentInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+
+
+class SuperAgentInput(AgentInput):
+    """Top-level investigation kickoff — the only Agent that starts from a bare event."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    triggered_by: str = "ingestion"
+
+
+class PlannerAgentInput(AgentInput):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    triage_result: TriageResult | None = None
+    previous_plan: ExecutionPlan | None = None
+    revise_reason: str | None = None
+
+
+class TriageAgentInput(AgentInput):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    raw_event_summary: str = ""
+    hint_entities: EntitySet = Field(default_factory=EntitySet)
+
+
+class EvidenceAgentInput(AgentInput):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    triage_result: TriageResult
+    plan_step_goal: str = ""
+    required_tools: list[str] = Field(default_factory=list)
+
+
+class GraphAgentInput(AgentInput):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    evidence_output: EvidenceOutput
+
+
+class RAGAgentInput(AgentInput):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    triage_result: TriageResult
+    evidence_output: EvidenceOutput | None = None
+
+
+class RiskAgentInput(AgentInput):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    triage_result: TriageResult
+    evidence_output: EvidenceOutput
+    graph_output: GraphOutput | None = None
+    rag_output: RAGOutput | None = None
+
+
+class ResponseAgentInput(AgentInput):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    risk_assessment: RiskAssessment
+    evidence_output: EvidenceOutput | None = None
+
+
+class VerifyAgentInput(AgentInput):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    response_plan: ResponsePlan
+    verification_phase: VerificationPhase
+
+
+class ReportAgentInput(AgentInput):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    evidence_output: EvidenceOutput
+    risk_assessment: RiskAssessment
+    response_plan: ResponsePlan | None = None
+    verification_result: VerificationResult | None = None
+
+
+class MemoryAgentInput(AgentInput):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    investigation_result: InvestigationResult
+
+
+class ToolAgentInput(AgentInput):
+    """ToolExecutor dispatch (ISSUE-006 owns actual execution).
+
+    ``tool_params`` stays a dict because tool argument shapes are defined by
+    the per-tool Pydantic schemas in ``app.tools.inputs``, not by this
+    envelope — ToolAgent must validate ``tool_params`` against the named
+    tool's own input model before dispatch.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    tool_name: str
+    tool_params: dict[str, Any] = Field(default_factory=dict)
+    action_id: str | None = None
+
+
+# Mapping of the 12 Agents (intro §4.4) to their locked input model — mirrors
+# the output-side mapping tests build against ``agent_io`` classes.
+AGENT_INPUT_MODELS: dict[AgentName, type[AgentInput]] = {
+    "super_agent": SuperAgentInput,
+    "planner_agent": PlannerAgentInput,
+    "triage_agent": TriageAgentInput,
+    "evidence_agent": EvidenceAgentInput,
+    "graph_agent": GraphAgentInput,
+    "rag_agent": RAGAgentInput,
+    "risk_agent": RiskAgentInput,
+    "response_agent": ResponseAgentInput,
+    "verify_agent": VerifyAgentInput,
+    "report_agent": ReportAgentInput,
+    "memory_agent": MemoryAgentInput,
+    "tool_agent": ToolAgentInput,
+}
+
+AGENT_INPUT_BY_NAME = AGENT_INPUT_MODELS

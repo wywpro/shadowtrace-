@@ -120,6 +120,8 @@ ERROR_CODE_REGISTRY: dict[str, ErrorCategory] = {
     # Adapters (ISSUE-012)
     "adapter_not_found": ErrorCategory.USER_INPUT,
     "adapter_validation_error": ErrorCategory.USER_INPUT,
+    # Startup / runtime configuration (ISSUE-093 §5)
+    "configuration_error": ErrorCategory.SYSTEM,
 }
 
 
@@ -373,6 +375,20 @@ class AdapterNotFoundError(ShadowTraceError):
     status_code = 404
     default_error_code = "adapter_not_found"
     default_category = ErrorCategory.USER_INPUT
+    default_retryable = False
+
+
+class ConfigurationError(ShadowTraceError):
+    """Illegal runtime configuration (ISSUE-093 §5).
+
+    Raised from ``Settings`` validation / application lifespan startup to
+    fail-closed BEFORE serving traffic — e.g. ``app_env=production`` combined
+    with any mock/simulation mode. Never retryable; the process must not start.
+    """
+
+    status_code = 500
+    default_error_code = "configuration_error"
+    default_category = ErrorCategory.SYSTEM
     default_retryable = False
 
 

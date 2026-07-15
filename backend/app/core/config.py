@@ -5,6 +5,12 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.errors import ConfigurationError
+
+
+def _looks_mock(value: str) -> bool:
+    return "mock" in value.strip().lower()
+
 
 class Settings(BaseSettings):
     """Runtime configuration. Defaults target Docker Compose service names."""
@@ -65,6 +71,38 @@ class Settings(BaseSettings):
     task_mode: str = Field(default="background", alias="TASK_MODE")
     celery_broker_url: str = Field(default="redis://redis:6379/1", alias="CELERY_BROKER_URL")
     approval_timeout_minutes: int = Field(default=30, alias="APPROVAL_TIMEOUT_MINUTES")
+
+    def model_post_init(self, __context: object) -> None:
+        violations = self.production_fail_closed_violations()
+        if violations:
+            raise ConfigurationError(
+                "app_env=production forbids mock/simulation runtime modes: "
+                + ", ".join(violations),
+                error_code="configuration_error",
+                details={"app_env": self.app_env, "violations": violations},
+            )
+
+    def production_fail_closed_violations(self) -> list[str]:
+        """Runtime modes that must never be active when ``app_env=production``.
+
+        Fail-closed (ISSUE-093 §5): a production deployment that is silently
+        running mock sources/tools/disposition or simulation mode is a
+        security incident, not a warning — construction must raise.
+        """
+        if self.app_env.strip().lower() != "production":
+            return []
+        violations: list[str] = []
+        if self.simulation_enabled:
+            violations.append("simulation_enabled=true")
+        if _looks_mock(self.source_mode):
+            violations.append(f"source_mode={self.source_mode}")
+        if _looks_mock(self.tool_mode):
+            violations.append(f"tool_mode={self.tool_mode}")
+        if _looks_mock(self.disposition_mode):
+            violations.append(f"disposition_mode={self.disposition_mode}")
+        if _looks_mock(self.disposition_adapter_kind):
+            violations.append(f"disposition_adapter_kind={self.disposition_adapter_kind}")
+        return violations
 
 
 @lru_cache

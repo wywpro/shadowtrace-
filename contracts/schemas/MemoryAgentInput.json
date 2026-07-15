@@ -1,0 +1,154 @@
+{
+  "$defs": {
+    "EventStatus": {
+      "description": "ShadowTrace internal investigation orchestration state (14 states).",
+      "enum": [
+        "new",
+        "triaging",
+        "collecting_evidence",
+        "analyzing",
+        "scoring",
+        "planning_response",
+        "waiting_approval",
+        "executing_response",
+        "verifying",
+        "replanning",
+        "contained",
+        "failed",
+        "reporting",
+        "closed"
+      ],
+      "title": "EventStatus",
+      "type": "string"
+    },
+    "FinalVerdict": {
+      "description": "Verdict label, independent from EventStatus.",
+      "enum": [
+        "none",
+        "possible_false_positive",
+        "false_positive",
+        "confirmed_threat"
+      ],
+      "title": "FinalVerdict",
+      "type": "string"
+    },
+    "InvestigationResult": {
+      "additionalProperties": false,
+      "description": "Final investigation summary produced by SuperAgent.\n\n``final_status=CLOSED`` is a *local* EventStatus only — it must never be\ninterpreted as proof that an external XDR disposition completed. Use the\nwriteback_* fields (and ``external_unsynced``) for external sync state.",
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "final_status": {
+          "$ref": "#/$defs/EventStatus"
+        },
+        "final_verdict": {
+          "$ref": "#/$defs/FinalVerdict",
+          "default": "none"
+        },
+        "escalated": {
+          "default": false,
+          "title": "Escalated",
+          "type": "boolean"
+        },
+        "external_unsynced": {
+          "default": false,
+          "title": "External Unsynced",
+          "type": "boolean"
+        },
+        "report_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Report Id"
+        },
+        "writeback_required": {
+          "default": false,
+          "title": "Writeback Required",
+          "type": "boolean"
+        },
+        "writeback_readiness": {
+          "$ref": "#/$defs/WritebackReadiness",
+          "default": "not_required"
+        },
+        "writeback_overall_status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WritebackStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pending_writeback_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Pending Writeback Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "event_id",
+        "final_status"
+      ],
+      "title": "InvestigationResult",
+      "type": "object"
+    },
+    "WritebackReadiness": {
+      "description": "Pre-submission condition; not an external receipt.",
+      "enum": [
+        "not_required",
+        "ready",
+        "source_unresolved",
+        "not_configured",
+        "capability_unknown",
+        "capability_unsupported",
+        "permission_denied",
+        "connector_unavailable"
+      ],
+      "title": "WritebackReadiness",
+      "type": "string"
+    },
+    "WritebackStatus": {
+      "description": "Only valid once a writeback command exists; null otherwise.",
+      "enum": [
+        "pending",
+        "sending",
+        "accepted",
+        "confirmed",
+        "partial",
+        "failed",
+        "conflict",
+        "unknown"
+      ],
+      "title": "WritebackStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "title": "Event Id",
+      "type": "string"
+    },
+    "investigation_result": {
+      "$ref": "#/$defs/InvestigationResult"
+    }
+  },
+  "required": [
+    "event_id",
+    "investigation_result"
+  ],
+  "title": "MemoryAgentInput",
+  "type": "object"
+}

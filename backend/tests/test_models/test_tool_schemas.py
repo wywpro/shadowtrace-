@@ -385,6 +385,110 @@ def test_capability_manifest_allows_source_kind_and_native_type() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("generic_state", "specific_state", "expected"),
+    [
+        (CapabilityState.SUPPORTED, CapabilityState.UNSUPPORTED, CapabilityState.UNSUPPORTED),
+        (CapabilityState.UNSUPPORTED, CapabilityState.SUPPORTED, CapabilityState.SUPPORTED),
+        (CapabilityState.UNKNOWN, CapabilityState.SUPPORTED, CapabilityState.SUPPORTED),
+    ],
+)
+def test_capability_manifest_most_specific_binding_wins(
+    generic_state: CapabilityState,
+    specific_state: CapabilityState,
+    expected: CapabilityState,
+) -> None:
+    """A specific (source_kind-scoped) binding must win over a generic one,
+    in either direction — specific UNSUPPORTED is never overridden by generic
+    SUPPORTED, and a specific SUPPORTED is not blocked by a generic non-support."""
+    manifest = CapabilityManifest(
+        provider_name="mixed",
+        online=True,
+        allowed_intents=[DispositionIntentKind.EVENT_STATUS_UPDATE],
+        allowed_operations=["set_event_disposition"],
+        bindings=[
+            CapabilityBindingEntry(
+                intent_kind=DispositionIntentKind.EVENT_STATUS_UPDATE,
+                operation_code="set_event_disposition",
+                state=generic_state,
+            ),
+            CapabilityBindingEntry(
+                intent_kind=DispositionIntentKind.EVENT_STATUS_UPDATE,
+                operation_code="set_event_disposition",
+                source_kind=SourceObjectKind.INCIDENT,
+                state=specific_state,
+            ),
+        ],
+    )
+    assert (
+        manifest.allows(
+            intent_kind=DispositionIntentKind.EVENT_STATUS_UPDATE,
+            operation_code="set_event_disposition",
+            source_kind=SourceObjectKind.INCIDENT,
+        )
+        is expected
+    )
+    # An unrelated source_kind never matches the specific binding — falls back
+    # to the generic one.
+    assert (
+        manifest.allows(
+            intent_kind=DispositionIntentKind.EVENT_STATUS_UPDATE,
+            operation_code="set_event_disposition",
+            source_kind=SourceObjectKind.ALERT,
+        )
+        is generic_state
+    )
+
+
+def test_capability_manifest_equal_specificity_conflict_fails_closed() -> None:
+    """Two equally-specific bindings that disagree must resolve to UNSUPPORTED."""
+    manifest = CapabilityManifest(
+        provider_name="conflicting",
+        online=True,
+        allowed_intents=[DispositionIntentKind.EVENT_STATUS_UPDATE],
+        allowed_operations=["set_event_disposition"],
+        bindings=[
+            CapabilityBindingEntry(
+                intent_kind=DispositionIntentKind.EVENT_STATUS_UPDATE,
+                operation_code="set_event_disposition",
+                source_kind=SourceObjectKind.INCIDENT,
+                state=CapabilityState.SUPPORTED,
+            ),
+            CapabilityBindingEntry(
+                intent_kind=DispositionIntentKind.EVENT_STATUS_UPDATE,
+                operation_code="set_event_disposition",
+                source_kind=SourceObjectKind.INCIDENT,
+                state=CapabilityState.UNSUPPORTED,
+            ),
+        ],
+    )
+    assert (
+        manifest.allows(
+            intent_kind=DispositionIntentKind.EVENT_STATUS_UPDATE,
+            operation_code="set_event_disposition",
+            source_kind=SourceObjectKind.INCIDENT,
+        )
+        is CapabilityState.UNSUPPORTED
+    )
+
+
+def test_side_effect_input_rejects_illegal_target_type() -> None:
+    """target_type is a closed set — cross-wiring a tool's target kind must fail."""
+    from app.tools.inputs import BlockIpInput, CheckStatusInput
+
+    with pytest.raises(ValidationError):
+        BlockIpInput(target_type="account", target="1.2.3.4")  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        BlockIpInput(target_type="not_a_real_type", target="1.2.3.4")  # type: ignore[arg-type]
+    # Base class default is fine when unset; explicit override to a legal
+    # literal for the specific subclass is rejected too (must stay "ip").
+    assert BlockIpInput(target="1.2.3.4").target_type == "ip"
+    # Generic verification input accepts any of the closed target kinds.
+    CheckStatusInput(target_type="account", target="user-1")
+    with pytest.raises(ValidationError):
+        CheckStatusInput(target_type="bogus", target="user-1")  # type: ignore[arg-type]
+
+
 def test_disposition_command_writeback_field_allowlist() -> None:
     """Outbound disposition envelope must not carry analysis / free-form fields."""
     cmd = DispositionCommand(

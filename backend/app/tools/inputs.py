@@ -8,9 +8,14 @@ intro §4.5 / ISSUE-006 统一命名. These models are exported to
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# The complete, closed set of tool target kinds. ``event`` is read-only and is
+# used by check_new_alerts; response subclasses still narrow their own Literal
+# so an event target can never reach a side-effect Provider.
+TargetType = Literal["ip", "domain", "host", "file", "process", "account", "event"]
 
 
 class _Strict(BaseModel):
@@ -107,49 +112,49 @@ class QueryHistoryCasesInput(_Strict):
 class TargetInput(_Strict):
     """Common target envelope for side-effect tools."""
 
-    target_type: str
+    target_type: TargetType
     target: str
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 class BlockIpInput(TargetInput):
-    target_type: str = "ip"
+    target_type: Literal["ip"] = "ip"
 
 
 class BlockDomainInput(TargetInput):
-    target_type: str = "domain"
+    target_type: Literal["domain"] = "domain"
 
 
 class IsolateHostInput(TargetInput):
-    target_type: str = "host"
+    target_type: Literal["host"] = "host"
 
 
 class QuarantineFileInput(TargetInput):
-    target_type: str = "file"
+    target_type: Literal["file"] = "file"
 
 
 class BlockProcessInput(TargetInput):
-    target_type: str = "process"
+    target_type: Literal["process"] = "process"
 
 
 class ScanHostForVirusInput(TargetInput):
-    target_type: str = "host"
+    target_type: Literal["host"] = "host"
 
 
 class DisableAccountInput(TargetInput):
-    target_type: str = "account"
+    target_type: Literal["account"] = "account"
 
 
 class ForceLogoutInput(TargetInput):
-    target_type: str = "account"
+    target_type: Literal["account"] = "account"
 
 
 class ResetPasswordInput(TargetInput):
-    target_type: str = "account"
+    target_type: Literal["account"] = "account"
 
 
 class RevokeTokenInput(TargetInput):
-    target_type: str = "account"
+    target_type: Literal["account"] = "account"
 
 
 class CreateTicketInput(_Strict):

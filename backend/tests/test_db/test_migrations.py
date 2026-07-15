@@ -284,6 +284,49 @@ async def test_event_status_update_single_active_head_and_superseding(
     await session.rollback()
 
 
+async def test_event_status_update_active_head_is_event_scoped_not_action(
+    session: AsyncSession,
+) -> None:
+    """ISSUE-093 §4: two *different* Actions on the same event/cycle/slot must
+    collide on the active-head index — it is not enough that each Action has
+    at most one active head of its own."""
+    sfx = _sfx()
+    event_id = await _seed_event(session, sfx)
+    _, source_record_id = await _seed_connector_source(session, sfx)
+    action_a = await _seed_action(session, event_id, sfx, f"fp-a-{sfx}")
+    action_b = await _seed_action(session, event_id, sfx + "b", f"fp-b-{sfx}")
+
+    def _head(oid: str, action_id: str, seq: int) -> m.DispositionOutbox:
+        return m.DispositionOutbox(
+            outbox_id=oid,
+            writeback_id=f"wbk-{oid}",
+            disposition_id=f"disp-{oid}",
+            action_id=action_id,
+            event_id=event_id,
+            closure_cycle=1,
+            source_record_id=source_record_id,
+            source_locator_hash="hash",
+            source_sequence=seq,
+            intent_kind="event_status_update",
+            logical_slot="terminal",
+            supersedes_disposition_id=None,
+            superseded_by_disposition_id=None,
+            idempotency_key=f"idem-{oid}",
+            command_payload={"op": "set_event_disposition"},
+            command_payload_sha256="sha",
+        )
+
+    session.add(_head(f"ha-{sfx}", action_a, 1))
+    await session.flush()
+    # A *different* action claiming an active head for the same
+    # event/closure_cycle/slot must be rejected, even though action_b itself
+    # has no other active head.
+    session.add(_head(f"hb-{sfx}", action_b, 2))
+    with pytest.raises(IntegrityError):
+        await session.flush()
+    await session.rollback()
+
+
 async def test_receipt_writeback_sequence_pk(session: AsyncSession) -> None:
     sfx = _sfx()
     event_id = await _seed_event(session, sfx)

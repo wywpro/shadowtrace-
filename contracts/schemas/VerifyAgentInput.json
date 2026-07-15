@@ -1,0 +1,627 @@
+{
+  "$defs": {
+    "Action": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "title": "Action Id",
+          "type": "string"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "plan_revision": {
+          "title": "Plan Revision",
+          "type": "integer"
+        },
+        "action_fingerprint": {
+          "title": "Action Fingerprint",
+          "type": "string"
+        },
+        "action_category": {
+          "$ref": "#/$defs/ActionCategory"
+        },
+        "action_name": {
+          "title": "Action Name",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "action_level": {
+          "$ref": "#/$defs/ActionLevel"
+        },
+        "execution_phase": {
+          "$ref": "#/$defs/ActionExecutionPhase",
+          "default": "immediate"
+        },
+        "activation_condition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Activation Condition"
+        },
+        "approved_operation_template_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approved Operation Template Hash"
+        },
+        "approved_terminal_dispositions": {
+          "items": {
+            "$ref": "#/$defs/SourceDisposition"
+          },
+          "title": "Approved Terminal Dispositions",
+          "type": "array"
+        },
+        "target_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Type"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target"
+        },
+        "parameters": {
+          "additionalProperties": true,
+          "title": "Parameters",
+          "type": "object"
+        },
+        "status": {
+          "$ref": "#/$defs/ActionStatus",
+          "default": "pending"
+        },
+        "auto_execute": {
+          "default": false,
+          "title": "Auto Execute",
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "impact_assessment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImpactAssessment"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "playbook_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Playbook Id"
+        },
+        "provider_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Name"
+        },
+        "execution_owner": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionOwner"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "execution_job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Execution Job Id"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
+        },
+        "writeback_required": {
+          "default": false,
+          "title": "Writeback Required",
+          "type": "boolean"
+        },
+        "writeback_applicable": {
+          "default": false,
+          "title": "Writeback Applicable",
+          "type": "boolean"
+        },
+        "writeback_readiness": {
+          "$ref": "#/$defs/WritebackReadiness",
+          "default": "not_required"
+        },
+        "writeback_block_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Writeback Block Reason"
+        },
+        "writeback_status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WritebackStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "disposition_source_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceObjectLocator"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "superseded_by_revision": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Superseded By Revision"
+        },
+        "executed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Executed At"
+        },
+        "effect_verification_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effect Verification Status"
+        },
+        "rollback_status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source_action_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Action Id"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        }
+      },
+      "required": [
+        "action_id",
+        "event_id",
+        "plan_revision",
+        "action_fingerprint",
+        "action_category",
+        "action_name",
+        "tool_name",
+        "action_level"
+      ],
+      "title": "Action",
+      "type": "object"
+    },
+    "ActionCategory": {
+      "enum": [
+        "system",
+        "response",
+        "verification",
+        "rollback"
+      ],
+      "title": "ActionCategory",
+      "type": "string"
+    },
+    "ActionExecutionPhase": {
+      "enum": [
+        "immediate",
+        "post_verify"
+      ],
+      "title": "ActionExecutionPhase",
+      "type": "string"
+    },
+    "ActionLevel": {
+      "enum": [
+        "l0",
+        "l1",
+        "l2",
+        "l3",
+        "l4",
+        "l5"
+      ],
+      "title": "ActionLevel",
+      "type": "string"
+    },
+    "ActionStatus": {
+      "description": "Action lifecycle state (11 states).",
+      "enum": [
+        "pending",
+        "waiting_approval",
+        "approved",
+        "rejected",
+        "superseded",
+        "executing",
+        "partial_success",
+        "success",
+        "failed",
+        "unknown",
+        "rolled_back"
+      ],
+      "title": "ActionStatus",
+      "type": "string"
+    },
+    "ExecutionOwner": {
+      "enum": [
+        "xdr_managed",
+        "direct_tool"
+      ],
+      "title": "ExecutionOwner",
+      "type": "string"
+    },
+    "ImpactAssessment": {
+      "additionalProperties": false,
+      "description": "Estimated blast radius / reversibility of an action (detailed in ISSUE-079).",
+      "properties": {
+        "impact_level": {
+          "$ref": "#/$defs/Severity",
+          "default": "low"
+        },
+        "reversible": {
+          "default": true,
+          "title": "Reversible",
+          "type": "boolean"
+        },
+        "affected_entity_count": {
+          "default": 0,
+          "title": "Affected Entity Count",
+          "type": "integer"
+        },
+        "affected_targets": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Affected Targets",
+          "type": "array"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        },
+        "assessed_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assessed By"
+        }
+      },
+      "title": "ImpactAssessment",
+      "type": "object"
+    },
+    "ResponsePlan": {
+      "additionalProperties": false,
+      "description": "Generated disposition plan.\n\n``actions`` is a generation-time snapshot only. Approval / execution /\nverification stages must re-load each Action by ``action_id``; they must\nnot rely on the embedded ``status`` field here.",
+      "properties": {
+        "plan_id": {
+          "title": "Plan Id",
+          "type": "string"
+        },
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/Action"
+          },
+          "title": "Actions",
+          "type": "array"
+        },
+        "strategy_summary": {
+          "default": "",
+          "title": "Strategy Summary",
+          "type": "string"
+        },
+        "generated_by": {
+          "$ref": "#/$defs/ResponsePlanGeneratedBy"
+        }
+      },
+      "required": [
+        "plan_id",
+        "generated_by"
+      ],
+      "title": "ResponsePlan",
+      "type": "object"
+    },
+    "ResponsePlanGeneratedBy": {
+      "enum": [
+        "llm",
+        "template"
+      ],
+      "title": "ResponsePlanGeneratedBy",
+      "type": "string"
+    },
+    "Severity": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "SourceDisposition": {
+      "description": "Normalized external disposition label; source_status_raw keeps the original.",
+      "enum": [
+        "pending",
+        "processing",
+        "contained",
+        "completed",
+        "suspended",
+        "ignored",
+        "unknown"
+      ],
+      "title": "SourceDisposition",
+      "type": "string"
+    },
+    "SourceObjectKind": {
+      "description": "Canonical source object kind used for the internal discriminated union.",
+      "enum": [
+        "incident",
+        "alert",
+        "asset",
+        "log",
+        "connector"
+      ],
+      "title": "SourceObjectKind",
+      "type": "string"
+    },
+    "SourceObjectLocator": {
+      "additionalProperties": false,
+      "description": "Minimal writeback locator (intro §4.3.5 / ISSUE-002).",
+      "properties": {
+        "source_product": {
+          "title": "Source Product",
+          "type": "string"
+        },
+        "source_tenant_id": {
+          "title": "Source Tenant Id",
+          "type": "string"
+        },
+        "connector_id": {
+          "title": "Connector Id",
+          "type": "string"
+        },
+        "source_kind": {
+          "$ref": "#/$defs/SourceObjectKind"
+        },
+        "source_object_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Object Type"
+        },
+        "source_object_id": {
+          "title": "Source Object Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_product",
+        "source_tenant_id",
+        "connector_id",
+        "source_kind",
+        "source_object_id"
+      ],
+      "title": "SourceObjectLocator",
+      "type": "object"
+    },
+    "VerificationPhase": {
+      "enum": [
+        "effect",
+        "disposition"
+      ],
+      "title": "VerificationPhase",
+      "type": "string"
+    },
+    "WritebackReadiness": {
+      "description": "Pre-submission condition; not an external receipt.",
+      "enum": [
+        "not_required",
+        "ready",
+        "source_unresolved",
+        "not_configured",
+        "capability_unknown",
+        "capability_unsupported",
+        "permission_denied",
+        "connector_unavailable"
+      ],
+      "title": "WritebackReadiness",
+      "type": "string"
+    },
+    "WritebackStatus": {
+      "description": "Only valid once a writeback command exists; null otherwise.",
+      "enum": [
+        "pending",
+        "sending",
+        "accepted",
+        "confirmed",
+        "partial",
+        "failed",
+        "conflict",
+        "unknown"
+      ],
+      "title": "WritebackStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "title": "Event Id",
+      "type": "string"
+    },
+    "response_plan": {
+      "$ref": "#/$defs/ResponsePlan"
+    },
+    "verification_phase": {
+      "$ref": "#/$defs/VerificationPhase"
+    }
+  },
+  "required": [
+    "event_id",
+    "response_plan",
+    "verification_phase"
+  ],
+  "title": "VerifyAgentInput",
+  "type": "object"
+}

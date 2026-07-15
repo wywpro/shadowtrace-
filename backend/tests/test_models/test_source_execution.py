@@ -38,16 +38,28 @@ def test_source_incident_defaults_related_refs_empty() -> None:
     assert inc.impacted_asset_refs == []
 
 
-def test_connector_manual_policy_defaults_not_required() -> None:
+def test_connector_policy_default_is_none_when_unset() -> None:
+    """Model must NOT fold an unset policy into NOT_REQUIRED (fail-closed for live)."""
     conn = SourceConnector(
         connector_id="conn-1",
         source_product="manual",
         display_name="Manual intake",
         capabilities={ConnectorCapability.QUERY: CapabilityState.SUPPORTED},
     )
-    assert conn.disposition_policy_default is DispositionPolicy.NOT_REQUIRED
+    assert conn.disposition_policy_default is None
     # Secrets stored only as references.
     assert conn.read_credential_ref is None
+
+
+def test_connector_manual_policy_can_set_explicit_not_required() -> None:
+    conn = SourceConnector(
+        connector_id="conn-2",
+        source_product="manual",
+        display_name="Manual intake",
+        capabilities={ConnectorCapability.QUERY: CapabilityState.SUPPORTED},
+        disposition_policy_default=DispositionPolicy.NOT_REQUIRED,
+    )
+    assert conn.disposition_policy_default is DispositionPolicy.NOT_REQUIRED
 
 
 def test_connector_rejects_unknown_field() -> None:

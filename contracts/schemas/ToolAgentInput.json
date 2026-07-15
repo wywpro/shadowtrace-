@@ -1,0 +1,37 @@
+{
+  "additionalProperties": false,
+  "description": "ToolExecutor dispatch (ISSUE-006 owns actual execution).\n\n``tool_params`` stays a dict because tool argument shapes are defined by\nthe per-tool Pydantic schemas in ``app.tools.inputs``, not by this\nenvelope — ToolAgent must validate ``tool_params`` against the named\ntool's own input model before dispatch.",
+  "properties": {
+    "event_id": {
+      "title": "Event Id",
+      "type": "string"
+    },
+    "tool_name": {
+      "title": "Tool Name",
+      "type": "string"
+    },
+    "tool_params": {
+      "additionalProperties": true,
+      "title": "Tool Params",
+      "type": "object"
+    },
+    "action_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Action Id"
+    }
+  },
+  "required": [
+    "event_id",
+    "tool_name"
+  ],
+  "title": "ToolAgentInput",
+  "type": "object"
+}

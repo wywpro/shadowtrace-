@@ -18,17 +18,11 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.agent_io import AGENT_INPUT_BY_NAME, AgentInput
+from app.services.working_memory import BoundWorkingMemory
+
 TIn = TypeVar("TIn", bound="AgentInput")
 TOut = TypeVar("TOut", bound=BaseModel)
-
-
-class AgentInput(BaseModel):
-    """Generic agent input envelope. Stage-specific payloads live in ``data``."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    event_id: str
-    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentOutput(BaseModel):
@@ -62,14 +56,13 @@ class BaseAgent(ABC, Generic[TIn, TOut]):
         *,
         llm_client: Any | None = None,
         tool_executor: Any | None = None,
-        context_store: Any | None = None,
-        working_memory: Any | None = None,
+        working_memory: BoundWorkingMemory | None = None,
         budget_service: Any | None = None,
         output_guard: Any | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.tool_executor = tool_executor
-        self.context_store = context_store
+        self.context_store = None
         self.working_memory = working_memory
         self.budget_service = budget_service
         self.output_guard = output_guard
@@ -79,6 +72,15 @@ class BaseAgent(ABC, Generic[TIn, TOut]):
 
     async def execute(self, input: TIn) -> TOut:
         """Template method: budget → pre_hooks → _run → guardrails → post_hooks → trace."""
+        expected_input = AGENT_INPUT_BY_NAME.get(self.agent_name)  # type: ignore[arg-type]
+        if expected_input is None or type(input) is not expected_input:
+            expected_name = (
+                expected_input.__name__ if expected_input is not None else "<AgentName>Input"
+            )
+            raise TypeError(
+                f"{self.agent_name or type(self).__name__} requires {expected_name}, "
+                f"got {type(input).__name__}"
+            )
         await self._check_budget(input)
         for hook in self.pre_hooks:
             await hook(self, input)

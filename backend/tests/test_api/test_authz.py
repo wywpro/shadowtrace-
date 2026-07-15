@@ -123,6 +123,14 @@ def test_dev_token_rejected_in_production(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("APP_ENV", "production")
+    # ISSUE-093 §5: production Settings construction fail-closes on mock/
+    # simulation modes, so exercise this auth-only test with live-shaped
+    # runtime modes to isolate the assertion from that unrelated gate.
+    monkeypatch.setenv("SOURCE_MODE", "live_edr")
+    monkeypatch.setenv("TOOL_MODE", "live")
+    monkeypatch.setenv("DISPOSITION_MODE", "live_xdr")
+    monkeypatch.setenv("DISPOSITION_ADAPTER_KIND", "http")
+    monkeypatch.setenv("SIMULATION_ENABLED", "false")
     get_settings.cache_clear()
     resp = client.get("/api/v1/events", headers=_hdr("admin"))
     assert resp.status_code == 401

@@ -312,10 +312,14 @@ class ActionTargetResult(Base):
 class DispositionOutbox(Base):
     """Reliable writeback outbox; the source of truth for writeback delivery.
 
-    ``command_payload`` is immutable after creation. Only one confirmed active head
-    per (action_id, closure_cycle, intent_kind, logical_slot) is allowed for
-    EVENT_STATUS_UPDATE via a partial unique index over rows where
-    ``superseded_by_disposition_id IS NULL``.
+    ``command_payload`` is immutable after creation. Only one active (non
+    -superseded) EVENT_STATUS_UPDATE head is allowed per
+    ``(event_id, closure_cycle, intent_kind, logical_slot)`` via a partial
+    unique index over rows where ``superseded_by_disposition_id IS NULL``.
+    This is deliberately event-scoped, NOT action-scoped: two different
+    Actions racing to submit the terminal disposition for the same event/
+    cycle/slot must collide on this index rather than silently coexist as
+    two "active" heads (ISSUE-093 §4).
     """
 
     __tablename__ = "disposition_outbox"
@@ -326,7 +330,7 @@ class DispositionOutbox(Base):
         ),
         Index(
             "uq_disposition_outbox_event_status_active_head",
-            "action_id",
+            "event_id",
             "closure_cycle",
             "intent_kind",
             "logical_slot",

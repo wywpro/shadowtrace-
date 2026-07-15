@@ -21,6 +21,8 @@ from app.models.enums import (
     EventType,
     FinalVerdict,
     Severity,
+    WritebackReadiness,
+    WritebackStatus,
 )
 from app.models.source import SourceReference
 
@@ -62,3 +64,40 @@ class SecurityEvent(BaseModel):
     external_unsynced: bool = False
     event_context_snapshot: dict[str, Any] | None = None
     row_version: int = Field(default=1, ge=1)
+
+
+class EventListItem(BaseModel):
+    """Redacted list-view projection of a :class:`SecurityEvent` (ISSUE-004).
+
+    Lives alongside ``SecurityEvent`` (not in the API schemas module) so that
+    ``EventContext.event`` (ISSUE-094 §2) can be typed as ``EventSummary``
+    without the models layer depending on the API layer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    event_type: EventType
+    title: str
+    # ``status`` is always the local EventStatus (never an external status).
+    status: EventStatus
+    severity: Severity
+    risk_score: int
+    final_verdict: FinalVerdict
+    writeback_required: bool
+    writeback_readiness: WritebackReadiness
+    # null when no writeback command exists; readiness distinguishes NOT_REQUIRED
+    # from blocked.
+    writeback_overall_status: WritebackStatus | None = None
+    pending_writeback_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    occurred_at: datetime | None = None
+
+
+class EventSummary(EventListItem):
+    """The authoritative shape of ``EventContext.event`` (ISSUE-094 §2)."""
+
+    disposition_policy: DispositionPolicy
+    external_unsynced: bool = False
+    escalated: bool = False

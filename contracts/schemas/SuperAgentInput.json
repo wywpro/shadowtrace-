@@ -1,0 +1,20 @@
+{
+  "additionalProperties": false,
+  "description": "Top-level investigation kickoff — the only Agent that starts from a bare event.",
+  "properties": {
+    "event_id": {
+      "title": "Event Id",
+      "type": "string"
+    },
+    "triggered_by": {
+      "default": "ingestion",
+      "title": "Triggered By",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id"
+  ],
+  "title": "SuperAgentInput",
+  "type": "object"
+}

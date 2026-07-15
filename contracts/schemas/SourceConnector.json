@@ -104,8 +104,15 @@
       "type": "object"
     },
     "disposition_policy_default": {
-      "$ref": "#/$defs/DispositionPolicy",
-      "default": "not_required"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DispositionPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "last_sync_at": {
       "anyOf": [

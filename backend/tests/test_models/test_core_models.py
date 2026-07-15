@@ -12,13 +12,14 @@ from app.models.enums import (
     ActionCategory,
     ActionExecutionPhase,
     ActionLevel,
+    DispositionPolicy,
     EventType,
     ExecutionOwner,
     SourceObjectKind,
     WritebackReadiness,
 )
 from app.models.evidence import Evidence, EvidenceSource
-from app.models.security_event import SecurityEvent
+from app.models.security_event import EventSummary, SecurityEvent
 from app.models.source import SourceReference
 
 
@@ -167,8 +168,109 @@ def test_required_writeback_stays_required_when_capability_blocked() -> None:
     assert act.writeback_readiness is WritebackReadiness.CAPABILITY_UNKNOWN
 
 
+def test_writeback_not_required_forbids_applicable() -> None:
+    """The literal impossible combo called out in ISSUE-093 §3."""
+    with pytest.raises(ValidationError, match="writeback_applicable"):
+        _action(
+            writeback_required=False,
+            writeback_applicable=True,
+            writeback_readiness=WritebackReadiness.READY,
+        )
+
+
+def test_writeback_not_required_forbids_non_not_required_readiness() -> None:
+    with pytest.raises(ValidationError, match="NOT_REQUIRED"):
+        _action(
+            writeback_required=False,
+            writeback_readiness=WritebackReadiness.CAPABILITY_UNKNOWN,
+        )
+
+
+def test_writeback_not_required_forbids_status() -> None:
+    from app.models.enums import WritebackStatus
+
+    with pytest.raises(ValidationError, match="writeback_status"):
+        _action(
+            writeback_required=False,
+            writeback_status=WritebackStatus.CONFIRMED,
+        )
+
+
+def test_writeback_required_not_applicable_requires_not_required_readiness() -> None:
+    with pytest.raises(ValidationError, match="writeback_applicable=false"):
+        _action(
+            writeback_required=True,
+            writeback_applicable=False,
+            writeback_readiness=WritebackReadiness.READY,
+        )
+    # Valid: obligation exists at the event level but not on this action.
+    ok = _action(
+        writeback_required=True,
+        writeback_applicable=False,
+        writeback_readiness=WritebackReadiness.NOT_REQUIRED,
+    )
+    assert ok.writeback_applicable is False
+
+
+def test_writeback_required_applicable_forbids_not_required_readiness() -> None:
+    with pytest.raises(ValidationError, match="forbid"):
+        _action(
+            writeback_required=True,
+            writeback_applicable=True,
+            writeback_readiness=WritebackReadiness.NOT_REQUIRED,
+        )
+
+
+def test_writeback_blocked_readiness_forbids_status() -> None:
+    from app.models.enums import WritebackStatus
+
+    with pytest.raises(ValidationError, match="writeback_status must be null"):
+        _action(
+            writeback_required=True,
+            writeback_applicable=True,
+            writeback_readiness=WritebackReadiness.CAPABILITY_UNSUPPORTED,
+            writeback_status=WritebackStatus.CONFIRMED,
+        )
+
+
+def test_writeback_ready_allows_status() -> None:
+    from app.models.enums import WritebackStatus
+
+    act = _action(
+        writeback_required=True,
+        writeback_applicable=True,
+        writeback_readiness=WritebackReadiness.READY,
+        writeback_status=WritebackStatus.CONFIRMED,
+    )
+    assert act.writeback_status is WritebackStatus.CONFIRMED
+    # READY with no attempt yet (status=None) is also legal.
+    act2 = _action(
+        writeback_required=True,
+        writeback_applicable=True,
+        writeback_readiness=WritebackReadiness.READY,
+    )
+    assert act2.writeback_status is None
+
+
+def _summary_from_event(event: SecurityEvent) -> EventSummary:
+    """Minimal EventSummary projection matching ``event_summary_from_security_event``."""
+    return EventSummary(
+        event_id=event.event_id,
+        event_type=event.event_type,
+        title=event.title,
+        status=event.status,
+        severity=event.severity,
+        risk_score=event.risk_score,
+        final_verdict=event.final_verdict,
+        writeback_required=event.disposition_policy is DispositionPolicy.REQUIRED,
+        writeback_readiness=WritebackReadiness.NOT_REQUIRED,
+        disposition_policy=event.disposition_policy,
+    )
+
+
 def test_event_context_defaults() -> None:
-    ctx = EventContext(event=_event())
+    # ISSUE-094 §2: EventContext.event is EventSummary, never the full SecurityEvent.
+    ctx = EventContext(event=_summary_from_event(_event()))
     assert ctx.execution_substate.value == "none"
     assert ctx.disposition_only_intent is False
     assert ctx.disposition_commands == []

@@ -288,7 +288,18 @@ class CapabilityManifest(BaseModel):
         source_kind: SourceObjectKind | None = None,
         native_source_object_type: str | None = None,
     ) -> CapabilityState:
-        """Resolve binding state for intent+operation(+optional source filters)."""
+        """Resolve binding state for intent+operation(+optional source filters).
+
+        Most-specific binding wins. Specificity is the count of
+        ``(source_kind, native_source_object_type)`` the binding declares AND
+        that also match the query; a binding that declares a dimension which
+        does not match the query is excluded entirely (it never wins and can
+        never "leak" UNKNOWN/SUPPORTED from an unrelated probe). When several
+        bindings tie for the highest specificity but disagree on state, the
+        result is UNSUPPORTED — a specific UNSUPPORTED binding must never be
+        silently overridden by a more generic SUPPORTED one, and genuine
+        conflicts must fail closed rather than optimistically picking SUPPORTED.
+        """
         if intent_kind not in self.allowed_intents:
             return CapabilityState.UNSUPPORTED
         if operation_code not in self.allowed_operations:
@@ -303,29 +314,40 @@ class CapabilityManifest(BaseModel):
             if native_source_object_type not in self.allowed_native_source_object_types:
                 return CapabilityState.UNSUPPORTED
 
-        matches = [
+        candidates = [
             b
             for b in self.bindings
             if b.intent_kind is intent_kind and b.operation_code == operation_code
         ]
-        if source_kind is not None:
-            matches = [b for b in matches if b.source_kind in (None, source_kind)]
-        if native_source_object_type is not None:
-            matches = [
-                b
-                for b in matches
-                if b.native_source_object_type in (None, native_source_object_type)
-            ]
-        if not matches:
+
+        scored: list[tuple[int, CapabilityState]] = []
+        for binding in candidates:
+            specificity = 0
+            if binding.source_kind is not None:
+                if source_kind is None or binding.source_kind != source_kind:
+                    continue
+                specificity += 1
+            if binding.native_source_object_type is not None:
+                if (
+                    native_source_object_type is None
+                    or binding.native_source_object_type != native_source_object_type
+                ):
+                    continue
+                specificity += 1
+            scored.append((specificity, binding.state))
+
+        if not scored:
             # Allowed lists passed but no probed binding → live-default UNKNOWN.
             return CapabilityState.UNKNOWN
-        # Prefer the most specific match; if any SUPPORTED, report it.
-        states = {b.state for b in matches}
-        if CapabilityState.SUPPORTED in states:
-            return CapabilityState.SUPPORTED
-        if CapabilityState.UNSUPPORTED in states and CapabilityState.UNKNOWN not in states:
-            return CapabilityState.UNSUPPORTED
-        return CapabilityState.UNKNOWN
+
+        max_specificity = max(specificity for specificity, _ in scored)
+        winning_states = {
+            state for specificity, state in scored if specificity == max_specificity
+        }
+        if len(winning_states) == 1:
+            return next(iter(winning_states))
+        # Conflicting equally-specific bindings → fail closed.
+        return CapabilityState.UNSUPPORTED
 
     def writeback_readiness_for_required(self) -> str:
         """Map connectivity + event_disposition probe to WritebackReadiness value.

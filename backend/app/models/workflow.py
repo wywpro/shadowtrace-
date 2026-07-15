@@ -26,6 +26,7 @@ from app.models.enums import (
     TERMINAL_SOURCE_DISPOSITIONS,
     ActionCategory,
     ActionExecutionPhase,
+    ActionLevel,
     ActionStatus,
     CaseLabel,
     ConfirmationEvidence,
@@ -62,6 +63,12 @@ FP_LOW_THRESHOLD = 0.7
 WRITEBACK_SUBMIT_TIMEOUT_S = 10
 WRITEBACK_CONFIRM_TIMEOUT_S = 120
 WRITEBACK_MAX_RETRIES = 5
+
+# Levels a system may auto-approve without a human ApprovalRecord (ISSUE-093 §4).
+# L2+ is human-in-the-loop by default; auto_execute never bypasses this for L2+.
+AUTO_APPROVABLE_ACTION_LEVELS: frozenset[ActionLevel] = frozenset(
+    {ActionLevel.L0, ActionLevel.L1}
+)
 
 # Budget (§4.10) — defaults mirrored in Settings.
 GLOBAL_TOKEN_BUDGET = 1_000_000
@@ -852,6 +859,9 @@ def validate_action_status_transition(
     after_effect_resolution: bool = False,
     template_unchanged: bool = True,
     has_job_or_outbox: bool = False,
+    action_level: ActionLevel = ActionLevel.L0,
+    auto_execute: bool = False,
+    has_approval_evidence: bool = False,
 ) -> None:
     table = ACTION_STATUS_TRANSITIONS_BY_CATEGORY[category]
     if not _edge_allowed(table, current, target):
@@ -860,6 +870,26 @@ def validate_action_status_transition(
             current=current,
             target=target,
             details={"action_category": category.value},
+        )
+
+    if (
+        target is ActionStatus.APPROVED
+        and category in (ActionCategory.RESPONSE, ActionCategory.ROLLBACK)
+        and action_level not in AUTO_APPROVABLE_ACTION_LEVELS
+        and not has_approval_evidence
+    ):
+        # auto_execute never bypasses the human-in-the-loop gate for L2+; it is
+        # only meaningful for the already-auto-approvable L0/L1 tier.
+        raise InvalidStateTransitionError(
+            f"{action_level.value} {category.value} action requires a persisted "
+            "ApprovalRecord before →APPROVED (human-in-the-loop gate)",
+            current=current,
+            target=target,
+            details={
+                "action_category": category.value,
+                "action_level": action_level.value,
+                "auto_execute": auto_execute,
+            },
         )
 
     if target is ActionStatus.SUPERSEDED:

@@ -153,7 +153,9 @@ class SourceConnector(BaseModel):
     read_endpoint: str | None = None
     disposition_endpoint: str | None = None
     capabilities: dict[ConnectorCapability, CapabilityState] = Field(default_factory=dict)
-    disposition_policy_default: DispositionPolicy = DispositionPolicy.NOT_REQUIRED
+    # No default: live connectors MUST set this explicitly (fail-closed). Mock/file
+    # connector factories set an explicit value at construction time.
+    disposition_policy_default: DispositionPolicy | None = None
     last_sync_at: datetime | None = None
     schema_version: str = "1"
     read_credential_ref: str | None = None
