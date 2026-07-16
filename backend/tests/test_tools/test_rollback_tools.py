@@ -100,7 +100,10 @@ def test_registry_and_manifest_publish_all_baseline_rollback_tools(
 
     assert ROLLBACK_NAMES.issubset(discovered)
     assert ROLLBACK_NAMES.issubset(set(manifest.allowed_operations))
-    assert {meta.tool_name for meta in registry.list_tools(ToolCategory.ROLLBACK)} == ROLLBACK_NAMES
+    registered_names = {
+        entry.tool_meta.tool_name for entry in registry.list_registered_tools(ToolCategory.ROLLBACK)
+    }
+    assert ROLLBACK_NAMES.issubset(registered_names)
     for tool_name in ROLLBACK_NAMES:
         assert registry.get_tool(tool_name).tool_impl is not None
         direct = registry.resolve_binding(tool_name, ExecutionOwner.DIRECT_TOOL, [])
@@ -139,7 +142,42 @@ async def test_provider_rejects_invented_rollback_for_non_reversible_action(
 
     assert result.status is ToolResultStatus.UNSUPPORTED
     assert result.provider_code == "capability_missing"
+    assert result.data["manual_escalation_required"] is True
+    assert result.data["reason"] == {
+        "code": "rollback_mapping_missing",
+        "tool_name": "unblock_process",
+        "provider_name": "mock_tool_provider",
+    }
     assert "unblock_process" not in provider.capability_manifest().allowed_operations
+    assert await state.list_namespace("jobs") == {}
+
+
+@pytest.mark.asyncio
+async def test_provider_unsupported_rollback_requires_structured_manual_escalation(
+    state: MockEnvironmentState,
+) -> None:
+    provider = MockToolProvider(
+        state,
+        config=MockToolProviderConfig(disabled_tools={"unblock_ip"}),
+    )
+
+    result = ToolResult.model_validate(
+        await provider.execute(
+            "unblock_ip",
+            _target("ip", "203.0.113.250"),
+            context=_context("unsupported-rollback"),
+        )
+    )
+
+    assert result.status is ToolResultStatus.UNSUPPORTED
+    assert result.data["manual_escalation_required"] is True
+    assert result.data["reason"] == {
+        "code": "provider_rollback_unsupported",
+        "tool_name": "unblock_ip",
+        "provider_name": "mock_tool_provider",
+        "source_tool_name": "block_ip",
+    }
+    assert "warning" not in result.data
     assert await state.list_namespace("jobs") == {}
 
 

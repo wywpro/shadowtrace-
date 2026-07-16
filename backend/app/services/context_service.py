@@ -679,10 +679,9 @@ class EventContextStore:
                 await asyncio.sleep(REDIS_WRITE_BACKOFFS[attempt])
 
         logger.warning(
-            "Redis context write failed after retries event_id=%s err=%s",
+            "Redis context write failed after retries event_id=%s error_type=%s",
             event_id,
-            last_exc,
-            exc_info=last_exc is not None,
+            type(last_exc).__name__ if last_exc is not None else "unknown",
         )
         return False
 

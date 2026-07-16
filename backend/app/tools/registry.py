@@ -8,6 +8,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,7 @@ from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
 
 from app.core.errors import ShadowTraceError
+from app.core.sanitization import redact_sensitive_text
 from app.models.enums import ErrorCategory, ExecutionOwner, ToolCategory
 from app.models.execution import ActionExecutionJob
 from app.models.tool_meta import (
@@ -67,6 +69,26 @@ class ToolValidationError(ShadowTraceError):
     default_error_code = "tool_validation_error"
     default_category = ErrorCategory.USER_INPUT
     default_retryable = False
+
+
+class ToolUnavailableReason(StrEnum):
+    """Stable audit reasons for excluding a catalog entry from execution."""
+
+    VIRTUAL_META = "virtual_meta"
+    UNHEALTHY = "unhealthy"
+    IMPLEMENTATION_MISSING = "implementation_missing"
+    BINDING_UNAVAILABLE = "binding_unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolRegistrationView:
+    """Immutable audit snapshot of one registered tool and its availability."""
+
+    tool_meta: ToolMeta
+    bindings: tuple[ProviderToolBinding, ...]
+    healthy: bool
+    available: bool
+    unavailable_reasons: tuple[ToolUnavailableReason, ...]
 
 
 @dataclass(slots=True)
@@ -184,14 +206,54 @@ class ToolRegistry:
                 details={"tool_name": tool_name},
             ) from exc
 
-    def list_tools(self, category: ToolCategory | str | None = None) -> list[ToolMeta]:
-        """List a snapshot of available metadata, optionally filtered by category."""
+    def list_registered_tools(
+        self,
+        category: ToolCategory | str | None = None,
+    ) -> list[ToolRegistrationView]:
+        """List the complete audit catalog, including unavailable reasons."""
+
         expected = category.value if isinstance(category, ToolCategory) else category
         return [
-            registered.tool_meta.model_copy(deep=True)
+            self._registration_view(registered)
             for registered in self._tools.values()
             if expected is None or registered.tool_meta.tool_category.value == expected
         ]
+
+    def list_available_tools(
+        self,
+        category: ToolCategory | str | None = None,
+        *,
+        execution_owner: ExecutionOwner | None = None,
+        required_capabilities: Sequence[str] = (),
+    ) -> list[ToolMeta]:
+        """List only healthy, executable tools with a usable current route."""
+
+        expected = category.value if isinstance(category, ToolCategory) else category
+        available: list[ToolMeta] = []
+        for registered in self._tools.values():
+            meta = registered.tool_meta
+            if expected is not None and meta.tool_category.value != expected:
+                continue
+            if not self._registration_view(registered).available:
+                continue
+            if meta.routing_kind is RoutingKind.OWNER_ROUTED:
+                if not self._has_usable_binding(
+                    registered,
+                    execution_owner=execution_owner,
+                    required_capabilities=required_capabilities,
+                ):
+                    continue
+            elif execution_owner is ExecutionOwner.XDR_MANAGED:
+                continue
+            elif not set(required_capabilities).issubset(meta.required_capabilities):
+                continue
+            available.append(meta.model_copy(deep=True))
+        return available
+
+    def list_tools(self, category: ToolCategory | str | None = None) -> list[ToolMeta]:
+        """Compatibility catalog view; new callers must choose registered or available."""
+
+        return [entry.tool_meta for entry in self.list_registered_tools(category)]
 
     def list_bindings(self, tool_name: str) -> list[ProviderToolBinding]:
         return [item.model_copy(deep=True) for item in self.get_tool(tool_name).bindings]
@@ -369,13 +431,14 @@ class ToolRegistry:
             return
         error = jsonschema_exceptions.best_match(errors)
         path = self._error_path(error)
+        reason = self._safe_validation_message(error)
         raise ToolValidationError(
-            f"{direction} validation failed for tool {tool_name!r} at {path}: {error.message}",
+            f"{direction} validation failed for tool {tool_name!r} at {path}: {reason}",
             details={
                 "tool_name": tool_name,
                 "direction": direction,
                 "path": path,
-                "reason": error.message,
+                "reason": reason,
                 "validator": error.validator,
             },
         )
@@ -431,6 +494,18 @@ class ToolRegistry:
             if missing:
                 parts.append(missing[0])
         return ToolRegistry._path_from_parts(parts)
+
+    @staticmethod
+    def _safe_validation_message(error: jsonschema_exceptions.ValidationError) -> str:
+        if error.validator == "type":
+            return f"value is not of type {error.validator_value!r}"
+        if error.validator == "enum":
+            return "value is not one of the allowed options"
+        if error.validator == "required":
+            return "required property is missing"
+        if error.validator == "additionalProperties":
+            return "additional property is not allowed"
+        return redact_sensitive_text(error.message)
 
     @staticmethod
     def _path_from_parts(parts: Sequence[Any]) -> str:
@@ -503,6 +578,44 @@ class ToolRegistry:
                 },
             )
 
+    @staticmethod
+    def _registration_view(registered: RegisteredTool) -> ToolRegistrationView:
+        meta = registered.tool_meta
+        reasons: list[ToolUnavailableReason] = []
+        if meta.routing_kind is RoutingKind.DISPOSITION_ONLY or not meta.executable:
+            reasons.append(ToolUnavailableReason.VIRTUAL_META)
+        if not registered.healthy:
+            reasons.append(ToolUnavailableReason.UNHEALTHY)
+        if registered.tool_impl is None:
+            reasons.append(ToolUnavailableReason.IMPLEMENTATION_MISSING)
+        if meta.routing_kind is RoutingKind.OWNER_ROUTED:
+            if not ToolRegistry._has_usable_binding(registered):
+                reasons.append(ToolUnavailableReason.BINDING_UNAVAILABLE)
+        return ToolRegistrationView(
+            tool_meta=meta.model_copy(deep=True),
+            bindings=tuple(binding.model_copy(deep=True) for binding in registered.bindings),
+            healthy=registered.healthy,
+            available=not reasons,
+            unavailable_reasons=tuple(reasons),
+        )
+
+    @staticmethod
+    def _has_usable_binding(
+        registered: RegisteredTool,
+        *,
+        execution_owner: ExecutionOwner | None = None,
+        required_capabilities: Sequence[str] = (),
+    ) -> bool:
+        meta = registered.tool_meta
+        required = set(meta.required_capabilities)
+        required.update(required_capabilities)
+        return any(
+            binding.execution_owner in meta.supported_execution_owners
+            and (execution_owner is None or binding.execution_owner is execution_owner)
+            and required.issubset(binding.capabilities)
+            for binding in registered.bindings
+        )
+
 
 def get_tool_registry() -> ToolRegistry:
     """FastAPI dependency returning the process registry singleton."""
@@ -521,9 +634,11 @@ if get_settings().tool_mode == "mock" and get_settings().simulation_enabled:
 
 __all__ = [
     "RegisteredTool",
+    "ToolRegistrationView",
     "ToolAlreadyRegisteredError",
     "ToolNotFoundError",
     "ToolRegistry",
+    "ToolUnavailableReason",
     "ToolValidationError",
     "get_tool_registry",
     "tool_registry",

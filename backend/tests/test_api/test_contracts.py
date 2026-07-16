@@ -6,10 +6,13 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.api.v1 import schemas as s
+from app.api.v1.errors import register_exception_handlers
+from app.core.errors import ValidationError as DomainValidationError
 from app.main import app
 from app.models.disposition import DispositionCommand
 
@@ -177,6 +180,56 @@ def test_invalid_state_transition_error_body(client: TestClient) -> None:
     body = resp.json()
     assert set(body) >= {"error_code", "error_message", "details"}
     assert body["error_code"] == "invalid_state_transition"
+
+
+def test_validation_error_does_not_echo_rejected_payload_or_pydantic_url(
+    client: TestClient,
+) -> None:
+    secrets = {
+        "password": "password-value-must-not-leak",
+        "token": "token-value-must-not-leak",
+        "cookie": "cookie-value-must-not-leak",
+        "Authorization": "Bearer authorization-value-must-not-leak",
+    }
+    response = client.post(
+        "/api/v1/actions/act-0a1b2c3d/approve",
+        headers=_hdr("approver"),
+        json={"comment": "safe", "decision_id": "decision-1", **secrets},
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error_code"] == "validation_error"
+    assert body["error_message"] == "request validation failed"
+    assert body["details"]["errors"]
+    assert all(set(error) == {"loc", "type", "msg"} for error in body["details"]["errors"])
+    serialized = json.dumps(body)
+    assert '"input"' not in serialized
+    assert "errors.pydantic.dev" not in serialized
+    assert all(secret not in serialized for secret in secrets.values())
+
+
+def test_domain_error_details_are_redacted_before_api_response() -> None:
+    test_app = FastAPI()
+    register_exception_handlers(test_app)
+
+    @test_app.get("/error")
+    async def _error() -> None:
+        raise DomainValidationError(
+            "provider rejected Authorization: Bearer domain-message-secret",
+            details={
+                "password": "domain-password-secret",
+                "note": "token=domain-note-secret",
+            },
+        )
+
+    response = TestClient(test_app).get("/error")
+    assert response.status_code == 422
+    serialized = response.text
+    assert "domain-message-secret" not in serialized
+    assert "domain-password-secret" not in serialized
+    assert "domain-note-secret" not in serialized
+    assert "[REDACTED]" in serialized
 
 
 def test_disposition_command_rejects_analysis_fields() -> None:

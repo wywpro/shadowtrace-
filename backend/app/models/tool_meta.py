@@ -278,7 +278,17 @@ class CapabilityManifest(BaseModel):
     supports_lookup_by_idempotency: bool = False
     supports_idempotency: bool = False
     supports_concurrency_control: bool = False
+    supports_fencing: bool = False
+    allowed_execution_channels: list[ExecutionChannel] = Field(default_factory=list)
     bindings: list[CapabilityBindingEntry] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _execution_guarantees_are_consistent(self) -> CapabilityManifest:
+        if self.supports_fencing and not self.supports_concurrency_control:
+            raise ValueError("fencing requires concurrency control")
+        if len(set(self.allowed_execution_channels)) != len(self.allowed_execution_channels):
+            raise ValueError("allowed_execution_channels must be unique")
+        return self
 
     def allows(
         self,

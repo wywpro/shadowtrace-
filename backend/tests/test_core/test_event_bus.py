@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import logging
 import os
 from collections.abc import AsyncIterator
 
@@ -11,6 +13,7 @@ import pytest_asyncio
 
 from app.core.event_bus import SOCKET_MESSAGE_TYPES, EventBus, sanitize_payload
 from app.core.redis_client import RedisClient
+from app.core.sanitization import RedactingFormatter
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
@@ -40,6 +43,10 @@ def test_sanitize_redacts_secrets_and_raw_result() -> None:
             "nested": {"password": "p", "ok": 1},
             "raw_result": {"vendor": "leak"},
             "items": [{"token": "t", "id": "1"}],
+            "message": "Authorization: Bearer value-pattern-secret",
+            "diagnostic": 'password="value with spaces" cookie=session-secret; Path=/',
+            "jwt_note": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.signature123",
+            "endpoint": "https://user:password@example.test/api",
         }
     )
     assert cleaned["status"] == "closed"
@@ -49,6 +56,34 @@ def test_sanitize_redacts_secrets_and_raw_result() -> None:
     assert cleaned["raw_result"] == "[REDACTED]"
     assert cleaned["items"][0]["token"] == "[REDACTED]"
     assert cleaned["items"][0]["id"] == "1"
+    assert "value-pattern-secret" not in cleaned["message"]
+    assert "value with spaces" not in cleaned["diagnostic"]
+    assert "session-secret" not in cleaned["diagnostic"]
+    assert "eyJhbGci" not in cleaned["jwt_note"]
+    assert "password" not in cleaned["endpoint"]
+
+
+def test_redacting_log_formatter_removes_credential_values() -> None:
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(RedactingFormatter("%(levelname)s %(message)s"))
+    logger = logging.getLogger("shadowtrace.tests.redaction")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        logger.info(
+            "provider rejected Authorization: Bearer log-secret-token "
+            "endpoint=https://user:password@example.test"
+        )
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = True
+
+    output = stream.getvalue()
+    assert "log-secret-token" not in output
+    assert "user:password" not in output
+    assert "[REDACTED]" in output
 
 
 @pytest.mark.asyncio

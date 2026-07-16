@@ -29,6 +29,7 @@ from app.core.errors import (
     WritebackPendingError,
     WritebackUnsupportedError,
 )
+from app.core.sanitization import redact_sensitive_text, sanitize_data
 
 # Re-export domain errors so API modules keep a stable import path.
 __all__ = [
@@ -52,12 +53,35 @@ def _error_body(error_code: str, error_message: str, details: dict[str, Any]) ->
     return {"error_code": error_code, "error_message": error_message, "details": details}
 
 
+def _safe_validation_errors(exc: RequestValidationError) -> list[dict[str, Any]]:
+    """Keep validation diagnostics useful without echoing rejected input or URLs."""
+
+    try:
+        return [
+            {
+                "loc": error.get("loc", ()),
+                "type": error.get("type", "value_error"),
+                "msg": redact_sensitive_text(str(error.get("msg", "invalid value"))),
+            }
+            for error in exc.errors()
+        ]
+    except Exception:  # noqa: BLE001 - fail closed instead of echoing unsafe diagnostics
+        return []
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register the unified error handlers on the FastAPI app."""
 
     @app.exception_handler(ShadowTraceError)
     async def _handle_shadowtrace(_: Request, exc: ShadowTraceError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content=exc.to_response())
+        try:
+            content = sanitize_data(exc.to_response())
+        except Exception:  # noqa: BLE001 - unsafe error details must never reach clients
+            return JSONResponse(
+                status_code=500,
+                content=_error_body("internal_error", "internal server error", {}),
+            )
+        return JSONResponse(status_code=exc.status_code, content=content)
 
     @app.exception_handler(AuthenticationError)
     async def _handle_authn(_: Request, exc: AuthenticationError) -> JSONResponse:
@@ -80,7 +104,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             content=_error_body(
                 "validation_error",
                 "request validation failed",
-                {"errors": exc.errors()},
+                {"errors": _safe_validation_errors(exc)},
             ),
         )
 

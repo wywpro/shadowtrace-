@@ -72,7 +72,10 @@ def test_registry_discovers_all_baseline_response_implementations() -> None:
     assert required.issubset(discovered)
     executable = {meta.tool_name for meta in RESPONSE_TOOL_METAS if meta.executable}
     assert executable.issubset(
-        {meta.tool_name for meta in registry.list_tools(ToolCategory.RESPONSE)}
+        {
+            entry.tool_meta.tool_name
+            for entry in registry.list_registered_tools(ToolCategory.RESPONSE)
+        }
     )
     assert registry.get_tool("update_source_event_disposition").tool_impl is None
 
@@ -108,7 +111,7 @@ def test_register_bindings_skips_missing_virtual_tool(
     registry = ToolRegistry()
     registry.auto_discover(include_virtual=False)
     assert "update_source_event_disposition" not in {
-        meta.tool_name for meta in registry.list_tools()
+        entry.tool_meta.tool_name for entry in registry.list_registered_tools()
     }
 
     MockToolProvider(state).register_bindings(registry)
@@ -193,7 +196,14 @@ def test_xdr_accepted_provider_job_remains_queued_and_raw_result_is_sanitized() 
         source_record_id="",
         status=WritebackStatus.ACCEPTED,
         provider_job_id="pjob-queued",
-        raw_result={"authorization": "secret", "nested": {"token": "secret"}},
+        provider_code="token=provider-code-secret",
+        provider_message="Authorization: Bearer provider-message-secret",
+        raw_result={
+            "authorization": "secret",
+            "nested": {"token": "secret"},
+            "provider_note": "Bearer value-pattern-secret",
+            "callback": "https://user:password@example.test/status",
+        },
         simulated=True,
     )
 
@@ -208,6 +218,10 @@ def test_xdr_accepted_provider_job_remains_queued_and_raw_result_is_sanitized() 
     assert job.status is ExecutionJobStatus.QUEUED
     assert job.raw_result["authorization"] == "***"
     assert job.raw_result["nested"]["token"] == "***"
+    assert "value-pattern-secret" not in job.raw_result["provider_note"]
+    assert "password" not in job.raw_result["callback"]
+    assert "provider-code-secret" not in str(job.provider_code)
+    assert "provider-message-secret" not in str(job.provider_message)
 
 
 @pytest.mark.parametrize(
@@ -325,6 +339,9 @@ def test_capability_manifest_matches_enabled_direct_tools(
     assert manifest.provider_name == "mock_tool_provider"
     assert manifest.supports_idempotency is True
     assert manifest.supports_lookup_by_idempotency is True
+    assert manifest.supports_concurrency_control is True
+    assert manifest.supports_fencing is True
+    assert manifest.allowed_execution_channels == [ExecutionChannel.TOOL_PROVIDER]
     assert (
         manifest.allows(
             intent_kind=manifest.allowed_intents[0],

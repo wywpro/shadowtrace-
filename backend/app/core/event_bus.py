@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.redis_client import RedisClient
+from app.core.sanitization import sanitize_data
 
 logger = logging.getLogger(__name__)
 
@@ -33,24 +34,6 @@ SOCKET_MESSAGE_TYPES: frozenset[str] = frozenset(
     }
 )
 
-# Keys (case-insensitive) stripped / redacted before publish.
-_SENSITIVE_KEY_FRAGMENTS: frozenset[str] = frozenset(
-    {
-        "password",
-        "secret",
-        "token",
-        "api_key",
-        "apikey",
-        "authorization",
-        "credential",
-        "private_key",
-        "access_token",
-        "refresh_token",
-        "raw_result",
-        "raw_payload",
-    }
-)
-
 _REDACTED = "[REDACTED]"
 
 
@@ -59,29 +42,10 @@ def events_channel(event_id: str) -> str:
     return f"shadowtrace:events:{event_id}"
 
 
-def _is_sensitive_key(key: str) -> bool:
-    lowered = key.lower()
-    if lowered in _SENSITIVE_KEY_FRAGMENTS:
-        return True
-    return any(frag in lowered for frag in _SENSITIVE_KEY_FRAGMENTS)
-
-
 def sanitize_payload(value: Any) -> Any:
-    """Recursively redact secrets and unsanitized raw blobs from a payload."""
-    if isinstance(value, Mapping):
-        out: dict[str, Any] = {}
-        for key, item in value.items():
-            key_str = str(key)
-            if _is_sensitive_key(key_str):
-                out[key_str] = _REDACTED
-            else:
-                out[key_str] = sanitize_payload(item)
-        return out
-    if isinstance(value, list):
-        return [sanitize_payload(item) for item in value]
-    if isinstance(value, tuple):
-        return [sanitize_payload(item) for item in value]
-    return value
+    """Recursively redact secret keys, raw blobs, and credential-shaped values."""
+
+    return sanitize_data(value, replacement=_REDACTED)
 
 
 class EventBus:
@@ -100,11 +64,15 @@ class EventBus:
         if message_type not in SOCKET_MESSAGE_TYPES:
             raise ValueError(f"unknown socket message_type: {message_type!r}")
 
+        try:
+            safe_payload = sanitize_payload(dict(payload or {}))
+        except Exception:  # noqa: BLE001 - publish only a generic fail-closed payload
+            safe_payload = {"detail": "payload unavailable after redaction failure"}
         envelope = {
             "timestamp": datetime.now(UTC).isoformat(),
             "event_id": event_id,
             "message_type": message_type,
-            "payload": sanitize_payload(dict(payload or {})),
+            "payload": safe_payload,
         }
         channel = events_channel(event_id)
         try:

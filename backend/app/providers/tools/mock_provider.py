@@ -13,7 +13,7 @@ from typing import Any
 import orjson
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from app.adapters._util import sanitize_raw_result
+from app.adapters._util import sanitize_disposition_receipt, sanitize_raw_result
 from app.core.config import get_settings
 from app.models.disposition import DispositionReceipt
 from app.models.enums import (
@@ -155,6 +155,7 @@ def map_disposition_receipt_to_job(
     and therefore cannot duplicate the entity action submitted by the adapter.
     """
 
+    receipt = sanitize_disposition_receipt(receipt)
     status_map = {
         WritebackStatus.PENDING: ExecutionJobStatus.QUEUED,
         WritebackStatus.SENDING: ExecutionJobStatus.RUNNING,
@@ -303,6 +304,9 @@ class MockToolProvider:
             supports_status_query=True,
             supports_lookup_by_idempotency=True,
             supports_idempotency=True,
+            supports_concurrency_control=True,
+            supports_fencing=True,
+            allowed_execution_channels=[ExecutionChannel.TOOL_PROVIDER],
             bindings=[
                 CapabilityBindingEntry(
                     intent_kind=DispositionIntentKind.EXECUTION_RESULT_RECORD,
@@ -385,6 +389,10 @@ class MockToolProvider:
                 ToolResultStatus.UNSUPPORTED,
                 "tool is not an executable response or rollback capability",
                 code="capability_missing",
+                data=self._manual_escalation_data(
+                    tool_name,
+                    reason_code=self._unsupported_reason_code(tool_name),
+                ),
             )
         if context.execution_owner is not ExecutionOwner.DIRECT_TOOL:
             return self._error_result(
@@ -394,11 +402,20 @@ class MockToolProvider:
                 code="wrong_execution_owner",
             )
         if tool_name in self.config.disabled_tools:
+            reason_code = (
+                "provider_rollback_unsupported"
+                if meta.tool_category is ToolCategory.ROLLBACK
+                else "provider_capability_unavailable"
+            )
             return self._error_result(
                 tool_name,
                 ToolResultStatus.UNSUPPORTED,
                 "provider capability is unavailable",
                 code="capability_missing",
+                data=self._manual_escalation_data(
+                    tool_name,
+                    reason_code=reason_code,
+                ),
             )
 
         input_model = TOOL_INPUT_MODELS[tool_name]
@@ -1519,6 +1536,7 @@ class MockToolProvider:
         detail: str,
         *,
         code: str,
+        data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return ToolResult(
             call_id=new_call_id(),
@@ -1528,6 +1546,7 @@ class MockToolProvider:
             provider_code=code,
             provider_message=detail,
             error_detail=detail,
+            data=data or {},
             raw_result=sanitize_raw_result(
                 {
                     "fixture": "shadowtrace_mock_tool",
@@ -1536,6 +1555,31 @@ class MockToolProvider:
                 }
             ),
         ).model_dump(mode="json")
+
+    def _manual_escalation_data(
+        self,
+        tool_name: str,
+        *,
+        reason_code: str,
+    ) -> dict[str, Any]:
+        reason: dict[str, Any] = {
+            "code": reason_code,
+            "tool_name": tool_name,
+            "provider_name": self.name,
+        }
+        source_tool = ROLLBACK_SOURCE_MAP.get(tool_name)
+        if source_tool is not None:
+            reason["source_tool_name"] = source_tool
+        return {
+            "manual_escalation_required": True,
+            "reason": reason,
+        }
+
+    @staticmethod
+    def _unsupported_reason_code(tool_name: str) -> str:
+        if tool_name.startswith(("unblock_", "restore_", "cancel_", "close_", "rollback_")):
+            return "rollback_mapping_missing"
+        return "provider_capability_unavailable"
 
     @staticmethod
     def _validation_detail(exc: ValidationError) -> str:

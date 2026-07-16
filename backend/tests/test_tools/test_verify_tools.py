@@ -188,7 +188,10 @@ def test_registry_discovers_all_baseline_verification_tools_by_target_and_capabi
     discovered = set(registry.auto_discover())
 
     assert VERIFY_NAMES.issubset(discovered)
-    metas = {meta.tool_name: meta for meta in registry.list_tools(ToolCategory.VERIFICATION)}
+    metas = {
+        entry.tool_meta.tool_name: entry.tool_meta
+        for entry in registry.list_registered_tools(ToolCategory.VERIFICATION)
+    }
     assert VERIFY_NAMES.issubset(metas)
     for tool_name, spec in VERIFICATION_SPECS.items():
         assert metas[tool_name].output_schema

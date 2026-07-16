@@ -25,7 +25,9 @@ from app.tools.base import get_declared_tool_meta, tool
 from app.tools.registry import (
     ToolAlreadyRegisteredError,
     ToolNotFoundError,
+    ToolRegistrationView,
     ToolRegistry,
+    ToolUnavailableReason,
     ToolValidationError,
     get_tool_registry,
     tool_registry,
@@ -90,6 +92,16 @@ def test_register_lookup_list_stats_and_unregister_flow() -> None:
     assert registered.tool_impl is _execute
     assert registered.registered_at.tzinfo is not None
     assert registry.list_tools() == [query_meta]
+    assert registry.list_available_tools() == [query_meta]
+    assert registry.list_registered_tools() == [
+        ToolRegistrationView(
+            tool_meta=query_meta,
+            bindings=(),
+            healthy=True,
+            available=True,
+            unavailable_reasons=(),
+        )
+    ]
     assert registry.list_tools(ToolCategory.QUERY) == [query_meta]
     assert registry.list_tools("response") == []
     assert registry.get_tool_stats() == {
@@ -173,6 +185,19 @@ def test_output_validation_uses_declared_schema() -> None:
     assert exc.value.details["path"] == "$.records"
 
 
+def test_schema_validation_reason_does_not_echo_rejected_secret_value() -> None:
+    registry = ToolRegistry()
+    registry.register(_query_meta(), _execute)
+    secret = "Bearer registry-validation-secret"
+
+    with pytest.raises(ToolValidationError) as exc:
+        registry.validate_input("query_fixture", {"account": [secret], "mode": "brief"})
+
+    assert secret not in str(exc.value)
+    assert secret not in str(exc.value.details)
+    assert exc.value.details["reason"] == "value is not of type 'string'"
+
+
 def test_owner_routed_tool_supports_exactly_one_binding_per_owner() -> None:
     registry = ToolRegistry()
     meta = _owner_routed_meta()
@@ -236,6 +261,38 @@ def test_binding_resolution_merges_meta_and_runtime_capabilities() -> None:
     assert exc.value.details["required_capabilities"] == ["entity_response", "fast_path"]
 
 
+def test_available_view_filters_missing_binding_and_unhealthy_tools() -> None:
+    registry = ToolRegistry()
+    meta = _owner_routed_meta()
+    registry.register(meta, _execute)
+
+    assert registry.list_available_tools() == []
+    missing = registry.list_registered_tools()[0]
+    assert missing.available is False
+    assert missing.unavailable_reasons == (ToolUnavailableReason.BINDING_UNAVAILABLE,)
+
+    registry.register_binding(
+        ProviderToolBinding(
+            tool_name=meta.tool_name,
+            provider_name="mock-xdr",
+            execution_owner=ExecutionOwner.XDR_MANAGED,
+            execution_channel=ExecutionChannel.DISPOSITION_ADAPTER,
+            capabilities=["entity_response"],
+        )
+    )
+    assert registry.list_available_tools() == [meta]
+    assert registry.list_available_tools(execution_owner=ExecutionOwner.XDR_MANAGED) == [meta]
+    assert registry.list_available_tools(execution_owner=ExecutionOwner.DIRECT_TOOL) == []
+    assert registry.list_available_tools(required_capabilities=["status_lookup"]) == []
+
+    registry.get_tool(meta.tool_name).healthy = False
+    assert registry.list_available_tools() == []
+    unhealthy = registry.list_registered_tools()[0]
+    assert unhealthy.available is False
+    assert unhealthy.unavailable_reasons == (ToolUnavailableReason.UNHEALTHY,)
+    assert unhealthy.bindings[0].provider_name == "mock-xdr"
+
+
 def test_tool_provider_only_binding_rejects_xdr_owner() -> None:
     registry = ToolRegistry()
     meta = _query_meta()
@@ -260,6 +317,13 @@ async def test_virtual_meta_is_listed_but_cannot_execute_via_tool_provider() -> 
     registered = registry.get_tool(virtual.tool_name)
     assert registered.tool_impl is None
     assert registry.list_tools(ToolCategory.RESPONSE) == [virtual]
+    assert registry.list_available_tools(ToolCategory.RESPONSE) == []
+    audit = registry.list_registered_tools(ToolCategory.RESPONSE)[0]
+    assert audit.available is False
+    assert audit.unavailable_reasons == (
+        ToolUnavailableReason.VIRTUAL_META,
+        ToolUnavailableReason.IMPLEMENTATION_MISSING,
+    )
     with pytest.raises(WrongExecutionChannelError) as exc:
         await registered.execute({})
     assert exc.value.error_code == "wrong_execution_channel"
@@ -330,5 +394,9 @@ async def test_auto_discovery_registers_public_tool_modules_and_skips_helpers(
 
 def test_module_singleton_and_dependency_are_stable() -> None:
     assert get_tool_registry() is tool_registry
-    virtual_names = {meta.tool_name for meta in tool_registry.list_tools() if not meta.executable}
+    virtual_names = {
+        entry.tool_meta.tool_name
+        for entry in tool_registry.list_registered_tools()
+        if not entry.tool_meta.executable
+    }
     assert "update_source_event_disposition" in virtual_names

@@ -19,6 +19,7 @@ from app.adapters._util import (
     parse_connector,
     parse_source_item,
     require_separated_credentials,
+    sanitize_disposition_receipt,
     sanitize_raw_result,
 )
 from app.adapters.disposition.base import (
@@ -429,9 +430,7 @@ class MockXDRDispositionAdapter(BaseDispositionAdapter):
         except ValueError:
             logger.warning("disposition submit returned malformed payload")
             return await self._unknown_after_loss(command)
-        return receipt.model_copy(
-            update={"raw_result": sanitize_raw_result(dict(receipt.raw_result))}
-        )
+        return sanitize_disposition_receipt(receipt)
 
     async def _unknown_after_loss(self, command: DispositionCommand) -> DispositionReceipt:
         caps = self.capabilities()
@@ -514,9 +513,7 @@ class MockXDRDispositionAdapter(BaseDispositionAdapter):
         if resp.status_code >= 400:
             return None
         receipt = DispositionReceipt.model_validate(resp.json())
-        return receipt.model_copy(
-            update={"raw_result": sanitize_raw_result(dict(receipt.raw_result))}
-        )
+        return sanitize_disposition_receipt(receipt)
 
     async def health_check(self) -> ConnectorStatus:
         # Health is a read endpoint; use write token (also grants read on Mock).

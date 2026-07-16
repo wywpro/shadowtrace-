@@ -137,11 +137,29 @@ async def _run_tool(
 def test_registry_discovers_all_nine_baseline_query_implementations(
     registry: ToolRegistry,
 ) -> None:
-    query_metas = registry.list_tools(ToolCategory.QUERY)
+    query_metas = [entry.tool_meta for entry in registry.list_registered_tools(ToolCategory.QUERY)]
     query_meta_by_name = {meta.tool_name: meta for meta in query_metas}
-    assert set(query_meta_by_name) == QUERY_NAMES
-    assert len(query_metas) == 9
+    assert QUERY_NAMES.issubset(query_meta_by_name)
     assert all(query_meta_by_name[name].output_schema for name in QUERY_NAMES)
+
+    async def _third_party_query(params: dict[str, Any]) -> dict[str, Any]:
+        return {"data": params}
+
+    registry.register(
+        query_metas[0].model_copy(
+            update={
+                "tool_name": "third_party_query_extension",
+                "input_schema": {},
+                "output_schema": {},
+            }
+        ),
+        _third_party_query,
+    )
+    extended_names = {
+        entry.tool_meta.tool_name for entry in registry.list_registered_tools(ToolCategory.QUERY)
+    }
+    assert QUERY_NAMES.issubset(extended_names)
+    assert "third_party_query_extension" in extended_names
 
 
 @pytest.mark.asyncio

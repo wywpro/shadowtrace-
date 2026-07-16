@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
+from app.adapters._util import parse_source_item
 from app.adapters.disposition.base import BaseDispositionAdapter
 from app.adapters.file_source import FileSourceAdapter
 from app.adapters.mock_xdr import (
@@ -298,6 +299,23 @@ async def test_malformed_source_payload_marks_adapter_degraded(
     assert page.malformed_items == 1
     assert any(row["error_category"] == "malformed_payload" for row in quality.rows)
     assert await adapter.health_check() is ConnectorStatus.ONLINE
+
+
+def test_source_schema_quality_error_does_not_record_rejected_input() -> None:
+    quality = InMemoryDataQualityRecorder()
+    secret = "Bearer source-quality-secret"
+
+    item = parse_source_item(
+        SourceObjectKind.INCIDENT.value,
+        {"impacted_asset_refs": [secret]},
+        quality=quality,
+    )
+
+    assert item is None
+    assert quality.rows
+    assert secret not in str(quality.rows)
+    errors = quality.rows[0]["detail"]["errors"]
+    assert all("input" not in error and "url" not in error for error in errors)
 
 
 @pytest.mark.asyncio

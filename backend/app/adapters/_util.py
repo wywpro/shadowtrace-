@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from pydantic import ValidationError
 
 from app.adapters.source.base import DataQualityRecorder
 from app.core.errors import ValidationError as ShadowTraceValidationError
+from app.core.sanitization import redact_sensitive_text, sanitize_data
+from app.models.disposition import DispositionReceipt
 from app.models.enums import SourceObjectKind
 from app.models.source import (
     SourceAlert,
@@ -16,11 +17,6 @@ from app.models.source import (
     SourceConnector,
     SourceIncident,
     SourceLog,
-)
-
-_SECRET_KEY_RE = re.compile(
-    r"(password|passwd|secret|token|authorization|api[_-]?key|cookie|credential)",
-    re.I,
 )
 
 _KIND_MODEL: dict[str, type[SourceIncident | SourceAlert | SourceAsset | SourceLog]] = {
@@ -46,29 +42,68 @@ def require_separated_credentials(*, read_token: str, write_token: str) -> None:
 
 
 def sanitize_raw_result(payload: dict[str, Any], *, max_bytes: int = 8_192) -> dict[str, Any]:
-    """Strip auth-like keys and truncate large blobs for local receipt storage."""
+    """Redact secret keys/values and truncate large blobs for local receipt storage."""
 
-    def _scrub(obj: Any) -> Any:
+    def _truncate(obj: Any) -> Any:
         if isinstance(obj, dict):
-            out: dict[str, Any] = {}
-            for key, value in obj.items():
-                if _SECRET_KEY_RE.search(str(key)):
-                    out[str(key)] = "***"
-                else:
-                    out[str(key)] = _scrub(value)
-            return out
+            return {str(key): _truncate(value) for key, value in obj.items()}
         if isinstance(obj, list):
-            return [_scrub(x) for x in obj[:100]]
+            return [_truncate(item) for item in obj[:100]]
         if isinstance(obj, str) and len(obj) > 2_000:
             return obj[:2_000] + "…[truncated]"
         return obj
 
-    cleaned = _scrub(payload)
+    cleaned = _truncate(sanitize_data(payload, replacement="***"))
     encoded = str(cleaned)
     truncated = len(encoded) > max_bytes
     if truncated:
         return {"truncated": True, "preview": encoded[:max_bytes]}
     return cleaned if isinstance(cleaned, dict) else {"value": cleaned}
+
+
+def sanitize_disposition_receipt(receipt: DispositionReceipt) -> DispositionReceipt:
+    """Return a receipt safe for persistence and internal event propagation."""
+
+    raw_result = sanitize_raw_result(dict(receipt.raw_result))
+    target_results = [
+        target.model_copy(
+            update={
+                "provider_code": (
+                    redact_sensitive_text(target.provider_code)
+                    if target.provider_code is not None
+                    else None
+                ),
+                "message_code": (
+                    redact_sensitive_text(target.message_code)
+                    if target.message_code is not None
+                    else None
+                ),
+                "artifact_ref": (
+                    redact_sensitive_text(target.artifact_ref)
+                    if target.artifact_ref is not None
+                    else None
+                ),
+            }
+        )
+        for target in receipt.target_results
+    ]
+    return receipt.model_copy(
+        update={
+            "provider_code": (
+                redact_sensitive_text(receipt.provider_code)
+                if receipt.provider_code is not None
+                else None
+            ),
+            "provider_message": (
+                redact_sensitive_text(receipt.provider_message)
+                if receipt.provider_message is not None
+                else None
+            ),
+            "target_results": target_results,
+            "raw_result": raw_result,
+            "truncated": receipt.truncated or raw_result.get("truncated") is True,
+        }
+    )
 
 
 def parse_source_item(
@@ -105,7 +140,10 @@ def parse_source_item(
             quality.record(
                 stage="source_normalize",
                 error_category="schema_validation",
-                detail={"kind": kind, "errors": exc.errors(include_url=False)},
+                detail={
+                    "kind": kind,
+                    "errors": exc.errors(include_input=False, include_url=False),
+                },
             )
         return None
 
