@@ -25,6 +25,14 @@ from app.core.errors import (
     is_retryable,
     register_error_code,
 )
+from app.core.llm.base import (
+    LLMAuditError,
+    LLMAuthError,
+    LLMInvalidJSONError,
+    LLMProviderError,
+    LLMRateLimitedError,
+    LLMTimeoutError,
+)
 from app.models.enums import ErrorCategory, EventStatus
 from app.models.tool_meta import RoutingKind, WrongExecutionChannelError
 
@@ -250,6 +258,26 @@ def test_register_error_code_rejects_bad_names() -> None:
         register_error_code("NotSnake", ErrorCategory.SYSTEM)
     with pytest.raises(ValueError):
         register_error_code("", ErrorCategory.SYSTEM)
+
+
+def test_llm_error_subclass_retry_rules() -> None:
+    """ISSUE-027: auth/audit/invalid-json are non-retryable; timeout/rate-limited retryable."""
+    # Non-retryable
+    assert is_retryable(LLMAuthError("bad credentials")) is False
+    assert is_retryable(LLMAuditError("audit down")) is False
+    assert (
+        is_retryable(LLMInvalidJSONError("bad json", invalid_content="x", validation_error="e"))
+        is False
+    )
+    # Retryable
+    assert is_retryable(LLMTimeoutError("timed out")) is True
+    assert is_retryable(LLMRateLimitedError("rate limited")) is True
+    assert is_retryable(LLMProviderError("provider error")) is True
+
+    # Defense-in-depth: generic construction with these codes also non-retryable
+    assert is_retryable(LLMError("x", error_code="llm_auth_error")) is False
+    assert is_retryable(LLMError("x", error_code="llm_audit_error")) is False
+    assert is_retryable(LLMError("x", error_code="llm_invalid_json")) is False
 
 
 def test_guardrail_working_memory_code() -> None:

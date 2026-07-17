@@ -45,6 +45,8 @@ _NON_AUTO_RETRY_CODES: frozenset[str] = frozenset(
         "capacity_limit_exceeded",
         "wrong_execution_channel",
         "llm_invalid_json",  # repair path is explicit, not blind retry
+        "llm_auth_error",  # credentials are invalid; must not be retried
+        "llm_audit_error",  # audit persistence failure is fail-closed
     }
 )
 
@@ -78,7 +80,12 @@ ERROR_CODE_REGISTRY: dict[str, ErrorCategory] = {
     # Tools / LLM / budget / guardrail
     "tool_timeout": ErrorCategory.TOOL,
     "timeout": ErrorCategory.TRANSIENT,
+    "llm_timeout": ErrorCategory.LLM,
+    "llm_auth_error": ErrorCategory.LLM,
+    "llm_rate_limited": ErrorCategory.LLM,
     "llm_invalid_json": ErrorCategory.LLM,
+    "llm_provider_error": ErrorCategory.LLM,
+    "llm_audit_error": ErrorCategory.LLM,
     "budget_exceeded": ErrorCategory.BUDGET,
     "guardrail_failed": ErrorCategory.GUARDRAIL,
     "guardrail_violation": ErrorCategory.GUARDRAIL,

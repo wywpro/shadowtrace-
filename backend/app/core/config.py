@@ -102,6 +102,8 @@ class Settings(BaseSettings):
             violations.append(f"disposition_mode={self.disposition_mode}")
         if _looks_mock(self.disposition_adapter_kind):
             violations.append(f"disposition_adapter_kind={self.disposition_adapter_kind}")
+        if _looks_mock(self.llm_mode):
+            violations.append(f"llm_mode={self.llm_mode}")
         return violations
 
 

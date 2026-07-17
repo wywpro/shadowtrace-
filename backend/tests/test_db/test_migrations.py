@@ -146,6 +146,33 @@ async def test_all_core_tables_exist(session: AsyncSession) -> None:
     assert present == CORE_TABLES, {"unexpected": present - CORE_TABLES}
 
 
+async def test_llm_call_log_supports_prompt_status_and_failure_audit(
+    session: AsyncSession,
+) -> None:
+    sfx = _sfx()
+    event_id = await _seed_event(session, sfx)
+    row = m.LLMCallLog(
+        event_id=event_id,
+        agent_name="RiskAgent",
+        prompt_key="risk_score",
+        model_name="primary-model",
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        latency_ms=25,
+        fallback_level=0,
+        status="llm_timeout",
+    )
+    session.add(row)
+    await session.flush()
+
+    stored = await session.get(m.LLMCallLog, row.id)
+    assert stored is not None
+    assert stored.prompt_key == "risk_score"
+    assert stored.status == "llm_timeout"
+    await session.rollback()
+
+
 async def test_action_fingerprint_unique(session: AsyncSession) -> None:
     sfx = _sfx()
     event_id = await _seed_event(session, sfx)
