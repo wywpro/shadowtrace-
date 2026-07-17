@@ -545,7 +545,7 @@ class ToolExecutor:
                 return False
             if not meta.idempotency:
                 return False
-            return isinstance(exc, asyncio.TimeoutError) and meta.idempotency
+            return isinstance(exc, TimeoutError) and meta.idempotency
         return is_retryable(exc)
 
     @staticmethod
