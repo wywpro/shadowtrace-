@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import pkgutil
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -36,7 +36,9 @@ from app.tools.base import (
 from app.tools.specs import BASELINE_TOOL_METAS
 
 if TYPE_CHECKING:
+    from app.providers.tools.mock_provider import MockToolProvider
     from app.services.event_service import EventService
+    from app.tools.adapters.base import AdapterConfig, BaseToolAdapter
 
 _DISCOVERY_PACKAGES = ("query", "response", "verify", "rollback")
 _EXTERNAL_SCHEMA_REFS: dict[str, dict[str, Any]] = {
@@ -102,6 +104,7 @@ class RegisteredTool:
     call_count: int = 0
     error_count: int = 0
     healthy: bool = True
+    submission_ready: bool = True
 
     def require_tool_provider_impl(self) -> ToolImplementation:
         """Fail closed when a virtual/disposition-only meta reaches ToolExecutor."""
@@ -374,6 +377,7 @@ class ToolRegistry:
         base_package: str = "app.tools",
         *,
         include_virtual: bool = True,
+        include_tools: Collection[str] | None = None,
     ) -> list[str]:
         """Import public tool modules from the four ToolProvider package locations."""
         discovered: list[str] = []
@@ -392,6 +396,8 @@ class ToolRegistry:
                     # not tool implementations and must not enter the catalog.
                     continue
                 meta, implementation = self._discovered_exports(module)
+                if include_tools is not None and meta.tool_name not in include_tools:
+                    continue
                 existing = self._tools.get(meta.tool_name)
                 if existing is not None:
                     if existing.tool_meta == meta and existing.tool_impl is implementation:
@@ -405,6 +411,32 @@ class ToolRegistry:
         if include_virtual:
             discovered.extend(self.load_virtual_metas())
         return discovered
+
+    async def auto_discover_for_mode(
+        self,
+        *,
+        tool_mode: str,
+        adapters: Sequence[BaseToolAdapter] = (),
+        adapter_configs: Mapping[str, AdapterConfig] | None = None,
+        mixed_routes: Mapping[str, str] | None = None,
+        simulation_enabled: bool = True,
+        allow_live_side_effects: bool = False,
+        mock_provider: MockToolProvider | None = None,
+    ) -> list[str]:
+        """Discover only Providers explicitly allowed by the runtime mode."""
+
+        from app.tools.adapters.base import configure_tool_registry
+
+        return await configure_tool_registry(
+            self,
+            tool_mode=tool_mode,
+            adapters=adapters,
+            adapter_configs=adapter_configs,
+            mixed_routes=mixed_routes,
+            simulation_enabled=simulation_enabled,
+            allow_live_side_effects=allow_live_side_effects,
+            mock_provider=mock_provider,
+        )
 
     def _validate_instance(self, tool_name: str, direction: str, value: dict[str, Any]) -> None:
         registered = self.get_tool(tool_name)
@@ -623,13 +655,21 @@ def get_tool_registry() -> ToolRegistry:
 
 
 tool_registry = ToolRegistry()
-tool_registry.auto_discover()
 from app.core.config import get_settings  # noqa: E402
 
-if get_settings().tool_mode == "mock" and get_settings().simulation_enabled:
+_settings = get_settings()
+if _settings.tool_mode == "mock" and _settings.simulation_enabled:
+    tool_registry.auto_discover()
     from app.providers.tools.mock_provider import get_mock_tool_provider  # noqa: E402
 
     get_mock_tool_provider().register_bindings(tool_registry)
+elif _settings.tool_mode in {"live", "mixed"}:
+    # Live/mixed Providers require explicit application composition through
+    # ``configure_tool_registry``. Never import Mock implementations as fallback.
+    tool_registry.load_virtual_metas()
+else:
+    # Invalid or disabled mock configuration stays fail-closed and audit-visible.
+    tool_registry.load_virtual_metas()
 
 
 __all__ = [

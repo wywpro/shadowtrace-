@@ -228,6 +228,23 @@ class ToolExecutor:
                 "call_nature": call_nature.value,
             },
         )
+        if not registered.submission_ready:
+            result = self._failure_result(
+                call_id=call_id,
+                tool_name=tool_name,
+                provider_name=binding_provider,
+                status=ToolResultStatus.UNSUPPORTED,
+                error_detail="configured Provider is unavailable; manual handling required",
+                execution_time_ms=0,
+            )
+            await self._finalize(
+                call_id=call_id,
+                event_id=event_id,
+                result=result,
+                retry_count=0,
+                audit_started=audit_started,
+            )
+            return result
 
         attempt = 0
         retry_count = 0
@@ -291,13 +308,23 @@ class ToolExecutor:
                     ),
                     timeout=effective_timeout,
                 )
-                self.registry.validate_output(tool_name, raw)
+                try:
+                    raw_result = ToolResult.model_validate(raw)
+                except ValidationError:
+                    raw_result = None
+                if raw_result is None or raw_result.status in {
+                    ToolResultStatus.ACCEPTED,
+                    ToolResultStatus.SUCCESS,
+                    ToolResultStatus.PARTIAL_SUCCESS,
+                }:
+                    self.registry.validate_output(tool_name, raw)
                 result = self._coerce_tool_result(
                     raw,
                     call_id=call_id,
                     tool_name=tool_name,
                     provider_name=binding_provider,
                     execution_time_ms=self._elapsed_ms(started_monotonic),
+                    force_provider_name=call_nature is CallNature.SIDE_EFFECT,
                 )
 
                 if result.status in {
@@ -556,16 +583,35 @@ class ToolExecutor:
         tool_name: str,
         provider_name: str,
         execution_time_ms: int | None,
+        force_provider_name: bool = False,
     ) -> ToolResult:
         payload = dict(raw)
         payload.setdefault("call_id", call_id)
         payload.setdefault("tool_name", tool_name)
-        payload.setdefault("provider_name", provider_name)
+        if force_provider_name:
+            payload["provider_name"] = provider_name
+            if provider_name in {"mock_tool_provider", "mock_xdr"}:
+                if isinstance(payload.get("data"), dict):
+                    payload["data"] = {**payload["data"], "simulated": True}
+                payload["raw_result"] = {
+                    **(payload.get("raw_result") or {}),
+                    "simulated": True,
+                }
+        else:
+            payload.setdefault("provider_name", provider_name)
         payload.setdefault("execution_time_ms", execution_time_ms)
         try:
             return ToolResult.model_validate(payload)
         except ValidationError:
-            job = ActionExecutionJob.model_validate(raw)
+            job_payload = dict(raw)
+            if force_provider_name:
+                job_payload["provider_name"] = provider_name
+                if provider_name in {"mock_tool_provider", "mock_xdr"}:
+                    job_payload["raw_result"] = {
+                        **(job_payload.get("raw_result") or {}),
+                        "simulated": True,
+                    }
+            job = ActionExecutionJob.model_validate(job_payload)
             status = ToolResultStatus.ACCEPTED
             if job.status is ExecutionJobStatus.SUCCESS:
                 status = ToolResultStatus.SUCCESS
@@ -580,7 +626,7 @@ class ToolExecutor:
             return ToolResult(
                 call_id=call_id,
                 tool_name=tool_name,
-                provider_name=job.provider_name or provider_name,
+                provider_name=provider_name if force_provider_name else job.provider_name,
                 status=status,
                 job_id=job.job_id,
                 provider_job_id=job.provider_job_id,
