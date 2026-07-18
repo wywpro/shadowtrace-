@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
@@ -163,6 +164,31 @@ class BudgetMeterHook(Protocol):
 
 
 BudgetCallback: TypeAlias = Callable[..., Awaitable[None] | None]
+
+# CJK Unified Ideographs + common CJK punctuation / compatibility blocks.
+_CJK_RE = re.compile(
+    r"[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\u3400-\u4dbf"
+    r"\u4e00-\u9fff\uf900-\ufaff]"
+)
+
+
+def estimate_tokens(text: str) -> int:
+    """Deterministic heuristic token estimate (ISSUE-031).
+
+    CJK characters count as 1 token each; remaining characters count as
+    ``ceil(n / 4)`` tokens. Empty text is 0.
+    """
+
+    if not text:
+        return 0
+    cjk = 0
+    other = 0
+    for char in text:
+        if _CJK_RE.fullmatch(char):
+            cjk += 1
+        else:
+            other += 1
+    return cjk + (other + 3) // 4
 
 
 def _fallback_level(model_index: int) -> int:
@@ -587,4 +613,5 @@ __all__ = [
     "ProviderResponse",
     "SQLAlchemyLLMCallAuditRecorder",
     "default_golden_root",
+    "estimate_tokens",
 ]
