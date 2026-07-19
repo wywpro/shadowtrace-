@@ -24,7 +24,7 @@ CI_BUILD_PROJECT_PREFIX ?= $(COMPOSE_PROJECT_NAME)-ci-build
 CI_DATABASE_URL ?= postgresql+asyncpg://shadowtrace:shadowtrace@localhost:$(POSTGRES_PORT)/shadowtrace
 CI_REDIS_URL ?= redis://localhost:$(REDIS_PORT)/0
 
-.PHONY: up down test lint fmt migrate migrate-down integration-test test-tools ci-lint ci-test ci-build
+.PHONY: up down test lint fmt migrate migrate-down load-kb integration-test test-tools ci-lint ci-test ci-build
 
 up:
 	$(COMPOSE) up -d --build
@@ -39,6 +39,9 @@ migrate:
 
 migrate-down:
 	cd backend && $(PYTHON) -m alembic downgrade base
+
+load-kb:
+	cd backend && $(PYTHON) -m scripts.load_attack_kb
 
 test:
 	cd backend && $(PYTHON) -m pytest tests/test_infra/test_health.py -v

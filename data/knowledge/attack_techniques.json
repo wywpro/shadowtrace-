@@ -1,0 +1,552 @@
+{
+  "attack_version": "v15.1",
+  "description": "MITRE ATT&CK Enterprise technique subset for ShadowTrace demo scenarios and knowledge base bootstrapping.",
+  "techniques": [
+    {
+      "technique_id": "T1078",
+      "technique_name": "Valid Accounts",
+      "tactics": ["Defense Evasion", "Persistence", "Privilege Escalation", "Initial Access"],
+      "description": "Adversaries may obtain and abuse credentials of existing accounts as a means of gaining Initial Access, Persistence, Privilege Escalation, or Defense Evasion. Compromised credentials may be used to bypass access controls placed on various resources on systems within the network and may even be used for persistent access to remote systems and externally available services.",
+      "detection": "Monitor for unusual account authentication patterns (impossible travel, off-hours activity, atypical source IPs). Audit logon events (Event ID 4624/4625 on Windows) and cloud access logs. Correlate with known compromised credential lists and look for multiple failed logins followed by success."
+    },
+    {
+      "technique_id": "T1005",
+      "technique_name": "Data from Local System",
+      "tactics": ["Collection"],
+      "description": "Adversaries may search local system sources, such as file systems and configuration files or local databases, to find files of interest and sensitive data prior to Exfiltration. This may include browsing the file system, searching specific directories, or using command-line utilities to enumerate files.",
+      "detection": "Monitor for processes performing extensive file system enumeration (e.g., dir, ls, tree commands spawning from unusual parent processes). Watch for abnormal file access patterns on sensitive directories. Enable file integrity monitoring on critical data repositories."
+    },
+    {
+      "technique_id": "T1560",
+      "technique_name": "Archive Collected Data",
+      "tactics": ["Collection"],
+      "description": "Adversaries may compress and/or encrypt data collected prior to exfiltration. Common archiving utilities include zip, rar, 7z, tar, and gzip. Encryption may use standard algorithms (AES, RC4) or custom schemes. Archives may also be split into chunks or password-protected to evade detection.",
+      "detection": "Monitor for execution of common archiving tools (zip, 7z, WinRAR, tar, gzip) especially when followed by network connections. Watch for processes creating .zip/.7z/.rar/.tar.gz files in temporary or user-writable directories. Alert on archiving of large numbers of files or unusual directories."
+    },
+    {
+      "technique_id": "T1567",
+      "technique_name": "Exfiltration Over Web Service",
+      "tactics": ["Exfiltration"],
+      "description": "Adversaries may exfiltrate data to a cloud storage service, web service, or file sharing platform rather than over their primary C2 channel. Popular targets include Dropbox, Google Drive, Mega, Pastebin, Discord, and Telegram. This blends in with legitimate web traffic and can bypass egress filtering.",
+      "detection": "Monitor network connections to known cloud storage and file sharing domains. Look for large outbound data transfers to newly-registered or rarely-contacted domains. Inspect TLS SNI and HTTP Host headers for cloud storage API endpoints. Analyze netflow for disproportionate upload-to-download ratios."
+    },
+    {
+      "technique_id": "T1071",
+      "technique_name": "Application Layer Protocol",
+      "tactics": ["Command and Control"],
+      "description": "Adversaries may communicate using application layer protocols to blend in with existing traffic. Commands to the compromised system and exfiltrated data may be embedded within the protocol. Common protocols abused include HTTP/HTTPS, DNS, SMTP, and WebSocket.",
+      "detection": "Analyze network traffic for anomalies in common protocols: unusual User-Agent strings, beaconing intervals in HTTP requests, DNS queries with high entropy subdomains or unusual query types. Inspect protocol fields that deviate from RFC specifications or organizational baselines."
+    },
+    {
+      "technique_id": "T1048",
+      "technique_name": "Exfiltration Over Alternative Protocol",
+      "tactics": ["Exfiltration"],
+      "description": "Adversaries may exfiltrate data using a protocol different from the primary C2 channel. This could include FTP, SMTP, DNS tunneling, or ICMP tunneling. Using a separate channel can reduce the correlation between C2 traffic and data theft.",
+      "detection": "Monitor for unexpected protocol usage: DNS queries with large payloads (TXT records > 256 bytes), ICMP packets with large or structured payloads, FTP connections from non-file-server hosts. Baseline per-protocol volume and alert on deviations."
+    },
+    {
+      "technique_id": "T1041",
+      "technique_name": "Exfiltration Over C2 Channel",
+      "tactics": ["Exfiltration"],
+      "description": "Adversaries may exfiltrate data over the same command and control channel used for communications. This avoids the need to open additional connections that might be detected. Data may be embedded within C2 protocol fields such as HTTP POST bodies or DNS response data.",
+      "detection": "Monitor C2 channel traffic patterns for changes in upload volume or message frequency. Inspect protocol payload sizes for anomalies (e.g., HTTP POST bodies suddenly growing from bytes to megabytes). Correlate C2 traffic timing with file access events on endpoints."
+    },
+    {
+      "technique_id": "T1110",
+      "technique_name": "Brute Force",
+      "tactics": ["Credential Access"],
+      "description": "Adversaries may use brute force techniques to gain access to accounts when passwords are unknown or when password hashes are obtained. This includes password spraying (few passwords against many accounts), credential stuffing, and dictionary attacks. Commonly targeted services include SSH, RDP, SMB, and web applications.",
+      "detection": "Monitor authentication logs for multiple failed login attempts from the same source IP or against the same account. Alert on password spraying patterns (one password, many accounts, minimal failures per account). Track failed authentication rate per source IP and trigger above baseline thresholds."
+    },
+    {
+      "technique_id": "T1566",
+      "technique_name": "Phishing",
+      "tactics": ["Initial Access"],
+      "description": "Adversaries may send phishing messages to gain access to victim systems. This includes spearphishing attachments (malicious files), spearphishing links (malicious URLs), and spearphishing via third-party services. Phishing is frequently used as the initial infection vector in targeted intrusions.",
+      "detection": "Monitor email gateway logs for messages with suspicious attachments (.exe, .js, .vbs, .docm, .xlsm), known-malicious URLs, or domain spoofing. Implement DMARC/DKIM/SPF verification checks. Track users clicking on links in quarantined emails. Analyze email headers for sender anomalies."
+    },
+    {
+      "technique_id": "T1059",
+      "technique_name": "Command and Scripting Interpreter",
+      "tactics": ["Execution"],
+      "description": "Adversaries may abuse command and script interpreters to execute commands, scripts, or binaries. These include PowerShell on Windows, bash/sh on Linux/macOS, Python, JavaScript, VBScript, and Unix shells. These interfaces can be used to interact with systems and may provide capabilities not available through other means.",
+      "detection": "Monitor command-line parameters for suspicious patterns: encoded commands (-EncodedCommand, -e), hidden/NonInteractive windows, IEX/Invoke-Expression usage, download cradle patterns. Track PowerShell script block logging (Event ID 4104). Monitor bash history and shell audit logs for unusual commands."
+    },
+    {
+      "technique_id": "T1190",
+      "technique_name": "Exploit Public-Facing Application",
+      "tactics": ["Initial Access"],
+      "description": "Adversaries may attempt to exploit a vulnerability in an Internet-facing host or system to gain initial access. This includes vulnerabilities in web applications, web servers, email servers, VPN appliances, and other network-exposed software. Exploitation may result in code execution, file disclosure, or credential theft.",
+      "detection": "Monitor web server logs for exploit patterns: SQL injection strings, path traversal attempts, unusually long request URIs, abnormal HTTP methods. Deploy WAF rules for known CVE exploits. Track application error rates and crash patterns that may indicate exploitation attempts."
+    },
+    {
+      "technique_id": "T1189",
+      "technique_name": "Drive-by Compromise",
+      "tactics": ["Initial Access"],
+      "description": "Adversaries may gain access to systems by compromising a website that a user visits. This often exploits browser or plugin vulnerabilities, or leverages social engineering to trick the user into downloading and executing malicious content. Watering hole attacks target sites frequently visited by the victim organization.",
+      "detection": "Monitor web proxy logs for connections to newly-registered or low-reputation domains. Inspect web traffic for drive-by exploit kit patterns (multiple redirects, obfuscated JavaScript, heap spray indicators). Track browser crash reports and plugin exploitation alerts from endpoint protection."
+    },
+    {
+      "technique_id": "T1133",
+      "technique_name": "External Remote Services",
+      "tactics": ["Initial Access", "Persistence"],
+      "description": "Adversaries may leverage external-facing remote services (VPNs, Citrix, RDP gateways, SSH portals) to gain initial access or maintain persistence. Valid accounts obtained through credential theft, brute force, or purchase can be used to authenticate to these services.",
+      "detection": "Monitor remote access service logs for logins from unusual geographic locations, new devices, or outside business hours. Track concurrent sessions from different source IPs using the same account. Alert on new MFA device registrations followed by remote access logins."
+    },
+    {
+      "technique_id": "T1203",
+      "technique_name": "Exploitation for Client Execution",
+      "tactics": ["Execution"],
+      "description": "Adversaries may exploit software vulnerabilities in client applications (office suites, browsers, PDF readers, media players) to execute code. This typically requires user interaction such as opening a malicious document or visiting a compromised website. Common targets include CVE exploits in Microsoft Office and Adobe Acrobat.",
+      "detection": "Monitor for Office applications spawning child processes (e.g., Word.exe → cmd.exe, Excel.exe → powershell.exe). Track exploitation-related crash signatures and error reports. Enable AMSI and macro execution logging. Inspect documents with obfuscated macros or external object references."
+    },
+    {
+      "technique_id": "T1204",
+      "technique_name": "User Execution",
+      "tactics": ["Execution"],
+      "description": "Adversaries may rely on user actions to execute malicious code. This includes opening a malicious document, clicking a link, executing a downloaded file, or mounting a malicious ISO/DMG image. Social engineering is commonly used to convince the user to take the desired action.",
+      "detection": "Monitor for execution of files from temporary directories, browser download folders, or mounted virtual drives. Track file origin zone identifiers (Mark-of-the-Web) being bypassed. Alert on common social engineering file types (.iso, .img, .vhd) being mounted by non-administrative users."
+    },
+    {
+      "technique_id": "T1055",
+      "technique_name": "Process Injection",
+      "tactics": ["Defense Evasion", "Privilege Escalation"],
+      "description": "Adversaries may inject code into running processes to evade process-based defenses and elevate privileges. Techniques include DLL injection, process hollowing, thread execution hijacking, PE injection, and APC injection. Injected code may be masked as legitimate process activity.",
+      "detection": "Monitor for process injection API calls (VirtualAllocEx, WriteProcessMemory, CreateRemoteThread). Enable Windows Event ID 8 (CreateRemoteThread) tracking. Watch for processes with mismatched image paths and parent-child relationships. Analyze memory forensics for anomalous DLL loads."
+    },
+    {
+      "technique_id": "T1547",
+      "technique_name": "Boot or Logon Autostart Execution",
+      "tactics": ["Persistence", "Privilege Escalation"],
+      "description": "Adversaries may configure system settings to automatically execute programs during boot or user logon. This includes Registry Run keys, Startup folder entries, scheduled tasks, launch daemons (macOS), and systemd services (Linux). This ensures malware persistence across system restarts.",
+      "detection": "Monitor registry modifications to Run/RunOnce keys (HKLM and HKCU). Audit new or modified files in Startup folders. Track scheduled task creation (Event ID 4698) and service installation (Event ID 7045). Compare autostart entries against known-good baseline configurations."
+    },
+    {
+      "technique_id": "T1505",
+      "technique_name": "Server Software Component",
+      "tactics": ["Persistence"],
+      "description": "Adversaries may abuse legitimate extensibility features of server software to maintain persistence. This includes web shells on web servers, SQL Server stored procedures, JSP/FTP/Exchange server backdoors, and application plugins. These components blend in with normal server operations.",
+      "detection": "Monitor web server access logs for requests to newly-created files and unusual URI patterns. Audit file integrity on web directories and application plugin folders. Track database stored procedure creation/modification events. Analyze outbound network connections from server processes."
+    },
+    {
+      "technique_id": "T1068",
+      "technique_name": "Exploitation for Privilege Escalation",
+      "tactics": ["Privilege Escalation"],
+      "description": "Adversaries may exploit software vulnerabilities to elevate privileges from user to administrator or SYSTEM level. This includes kernel exploits, local service vulnerabilities, and misconfigured SUID/GUID binaries on Linux. Successful exploitation may bypass UAC and other privilege boundaries.",
+      "detection": "Monitor for known exploit indicators: suspicious kernel module loads, unexpected process privilege changes (SeDebugPrivilege assignment), SUID binary execution patterns. Track privilege escalation tool signatures. Alert on processes gaining SYSTEM or root privileges from non-administrative parent processes."
+    },
+    {
+      "technique_id": "T1548",
+      "technique_name": "Abuse Elevation Control Mechanism",
+      "tactics": ["Defense Evasion", "Privilege Escalation"],
+      "description": "Adversaries may bypass or manipulate mechanisms designed to control privilege elevation. On Windows this includes UAC bypass techniques (eventvwr, fodhelper, computerdefaults), sudo caching abuse on Linux, and setuid/setgid program exploitation. These techniques allow elevation without triggering security prompts.",
+      "detection": "Monitor for UAC bypass patterns: processes auto-elevating without user consent prompts (Event ID 4688 with specific integrity levels). Track sudo usage patterns and cache modifications. Alert on registry modifications to UAC-related keys (HKCU\\Software\\Classes)."
+    },
+    {
+      "technique_id": "T1036",
+      "technique_name": "Masquerading",
+      "tactics": ["Defense Evasion"],
+      "description": "Adversaries may manipulate features of their artifacts to make them appear legitimate or benign. This includes renaming files to match system binary names (svchost.exe misspelled as scvhost.exe), using right-to-left override characters to disguise file extensions, and mimicking legitimate digital signatures.",
+      "detection": "Monitor for files with names similar to system binaries in non-standard paths. Detect use of right-to-left override (RTLO) Unicode characters in filenames. Track processes running from unexpected locations. Compare binary file metadata (version info, signature) against trusted reference catalogs."
+    },
+    {
+      "technique_id": "T1027",
+      "technique_name": "Obfuscated Files or Information",
+      "tactics": ["Defense Evasion"],
+      "description": "Adversaries may attempt to make an executable or script's contents difficult to discover or analyze by encoding, encrypting, or compressing the payload. This includes base64-encoded scripts, XOR-encrypted shellcode, and packers/cryptors applied to malware binaries. Obfuscation may also apply to data within C2 protocols.",
+      "detection": "Monitor for execution of commands with large base64-encoded payloads (-EncodedCommand, -e flags). Detect packed binaries via entropy analysis and section header anomalies. Analyze scripts for heavy obfuscation patterns (string reversal, character encoding, excessive concatenation)."
+    },
+    {
+      "technique_id": "T1055.001",
+      "technique_name": "Process Injection: DLL Injection",
+      "tactics": ["Defense Evasion", "Privilege Escalation"],
+      "description": "Adversaries may inject Dynamic Link Libraries (DLLs) into running processes to execute malicious code. DLL injection is commonly performed by calling LoadLibrary or via reflective DLL loading that avoids the Windows loader. Injected DLLs run within the target process's memory space and inherit its permissions.",
+      "detection": "Monitor for DLL load events in sensitive processes (lsass.exe, svchost.exe). Track CreateRemoteThread and LoadLibrary API call sequences. Analyze loaded module lists for DLLs from unusual paths or without valid digital signatures. Enable AppLocker DLL rules where applicable."
+    },
+    {
+      "technique_id": "T1003",
+      "technique_name": "OS Credential Dumping",
+      "tactics": ["Credential Access"],
+      "description": "Adversaries may attempt to dump credentials from the operating system to obtain account login and authentication material. On Windows this targets LSASS memory, SAM database, and cached domain credentials (via tools like Mimikatz or direct API calls). On Linux this targets /etc/shadow, memory, and keyrings.",
+      "detection": "Monitor for access to LSASS process memory (OpenProcess with PROCESS_VM_READ on lsass.exe). Track use of known credential dumping tools (Mimikatz, ProcDump, fgdump). Alert on SAM registry hive access. Monitor Linux systems for access to /etc/shadow by non-system processes."
+    },
+    {
+      "technique_id": "T1555",
+      "technique_name": "Credentials from Password Stores",
+      "tactics": ["Credential Access"],
+      "description": "Adversaries may search for and extract credentials from common password storage locations. This includes browser password databases (Chrome, Firefox, Edge), system keychains (macOS Keychain, GNOME Keyring), password managers (KeePass, LastPass local vaults), and cloud CLI credential files (~/.aws/credentials).",
+      "detection": "Monitor for processes accessing browser password database files (Login Data, key4.db, logins.json). Track access to credential manager APIs and keychain decryption requests. Alert on command-line patterns for password stealer tools. Monitor file access to common credential file paths."
+    },
+    {
+      "technique_id": "T1552",
+      "technique_name": "Unsecured Credentials",
+      "tactics": ["Credential Access"],
+      "description": "Adversaries may search compromised systems for unsecured credentials stored in files, scripts, configuration files, bash history, environment variables, or source code repositories. These include hardcoded passwords, API keys, SSH private keys, and cloud service credentials left in accessible locations.",
+      "detection": "Monitor for suspicious access to common credential file paths (.env, .git-credentials, .aws/credentials, id_rsa). Track processes reading bash history files or searching for password patterns in scripts. Deploy file integrity monitoring on sensitive configuration directories."
+    },
+    {
+      "technique_id": "T1040",
+      "technique_name": "Network Sniffing",
+      "tactics": ["Credential Access", "Discovery"],
+      "description": "Adversaries may listen in on network traffic to capture credentials, tokens, and other sensitive information transmitted over the network. This can be done by placing a network interface in promiscuous mode or using ARP spoofing/poisoning to redirect traffic through the attacker's machine.",
+      "detection": "Monitor for network interfaces entering promiscuous mode. Detect ARP cache anomalies (multiple IPs mapping to a single MAC address). Track use of packet capture tools (tcpdump, Wireshark, TShark, netsh trace). Alert on non-admin users installing packet capture drivers (npcap)."
+    },
+    {
+      "technique_id": "T1087",
+      "technique_name": "Account Discovery",
+      "tactics": ["Discovery"],
+      "description": "Adversaries may attempt to enumerate local system accounts, domain accounts, or cloud accounts. On Windows this includes 'net user', 'net group', and LDAP queries. On Linux/macOS this includes reading /etc/passwd and using 'id' or 'whoami'. Cloud account enumeration may use cloud CLI tools or APIs.",
+      "detection": "Monitor for account enumeration commands ('net user /domain', 'Get-ADUser', 'ldapsearch', 'cat /etc/passwd'). Track LDAP queries that enumerate all users. Alert on rapid-fire cloud API calls listing IAM users or workspace members. Baseline normal directory query volume per host."
+    },
+    {
+      "technique_id": "T1046",
+      "technique_name": "Network Service Discovery",
+      "tactics": ["Discovery"],
+      "description": "Adversaries may attempt to discover running services on remote hosts and local network infrastructure through port scanning, vulnerability scanning, and service banner grabbing. Common tools include Nmap, Masscan, Zgrab2, and scripts using /dev/tcp on Linux. This helps identify potential targets for lateral movement.",
+      "detection": "Monitor for port scanning patterns: sequential or rapid SYN packets to multiple ports on a single host or single port across multiple hosts. Detect use of known scanning tools via process monitoring. Track TCP connection attempts to closed ports (generating RST responses). Baseline normal network discovery activity."
+    },
+    {
+      "technique_id": "T1082",
+      "technique_name": "System Information Discovery",
+      "tactics": ["Discovery"],
+      "description": "Adversaries may attempt to gather detailed information about a compromised system's configuration, installed software, patches, and hardware. Commands include 'systeminfo', 'hostname', 'uname -a', 'sw_vers', 'lscpu', and Windows registry queries. This information helps tailor subsequent actions.",
+      "detection": "Monitor for execution of system enumeration commands, especially when chained together. Track scripts that collect system information and output to files. Alert on system recon performed under service or web application accounts that normally do not require interactive discovery."
+    },
+    {
+      "technique_id": "T1016",
+      "technique_name": "System Network Configuration Discovery",
+      "tactics": ["Discovery"],
+      "description": "Adversaries may gather information about network configuration and connectivity. Commands include 'ipconfig /all', 'netstat -ano', 'route print', 'arp -a', 'ifconfig', 'ip route', 'ss -tlnp'. This reveals internal network topology, connected hosts, listening services, and domain controllers.",
+      "detection": "Monitor for network discovery commands executed from non-IT user sessions. Track consecutive execution of multiple network enumeration utilities. Alert on DNS zone transfer attempts and excessive NetBIOS/LLMNR name resolution queries. Baseline administrative network discovery per user role."
+    },
+    {
+      "technique_id": "T1069",
+      "technique_name": "Permission Groups Discovery",
+      "tactics": ["Discovery"],
+      "description": "Adversaries may attempt to discover group and permission settings. On Windows this includes 'net localgroup', 'net group /domain', and 'Get-ADGroupMember'. On Linux/macOS this includes 'groups', 'id', and reading /etc/group. Cloud equivalents include listing IAM groups, Azure AD groups, and Okta group memberships.",
+      "detection": "Monitor for privileged group enumeration (Domain Admins, Enterprise Admins, Administrators). Track LDAP queries filtering on adminCount=1 or specific high-value groups. Alert on cloud CLI commands listing IAM group memberships with recursive expansion."
+    },
+    {
+      "technique_id": "T1057",
+      "technique_name": "Process Discovery",
+      "tactics": ["Discovery"],
+      "description": "Adversaries may enumerate running processes to gather information about security software, system applications, and potential target processes for injection. Common commands include 'ps', 'tasklist', 'Get-Process', and 'top'. Process lists help identify EDR/AV products and valuable targets.",
+      "detection": "Monitor for process listing commands ('tasklist /v', 'ps aux', 'ps -ef'). Track scripts that enumerate process properties (command-line arguments, loaded modules, environment). Alert when process discovery is followed by process injection or termination of security products."
+    },
+    {
+      "technique_id": "T1083",
+      "technique_name": "File and Directory Discovery",
+      "tactics": ["Discovery"],
+      "description": "Adversaries may enumerate files and directories to discover sensitive data, configuration files, or opportunities to expand access. Common commands include 'dir /s', 'tree', 'find', 'ls -laR', and 'locate'. Particular attention is paid to user document folders, shared drives, and source code repositories.",
+      "detection": "Monitor for extensive file system enumeration, especially targeting network shares, user home directories, and source code paths. Track commands that search for specific file patterns (.config, .pem, .sql, .bak). Alert on enumeration by non-interactive service accounts."
+    },
+    {
+      "technique_id": "T1497",
+      "technique_name": "Virtualization/Sandbox Evasion",
+      "tactics": ["Defense Evasion", "Discovery"],
+      "description": "Adversaries may check for the presence of virtual machine or sandbox environments to avoid analysis. Checks include detecting VM-specific hardware (VMware VGA, VirtualBox ACPI), registry keys, running services, and MAC address prefixes. Malware may delay execution or alter behavior when a sandbox is detected.",
+      "detection": "Monitor for execution of VM detection commands and registry queries (HKLM\\SOFTWARE\\VMware, Inc.\\, HKLM\\HARDWARE\\DEVICEMAP\\Scsi). Track processes querying SMBIOS or checking MAC address prefixes. Detect sleep obfuscation, time-based evasion, and user interaction verification patterns."
+    },
+    {
+      "technique_id": "T1021",
+      "technique_name": "Remote Services",
+      "tactics": ["Lateral Movement"],
+      "description": "Adversaries may use valid accounts to log into remote services for lateral movement. This includes Remote Desktop Protocol (RDP), SSH, SMB/Windows admin shares, WinRM, VNC, and PsExec. Remote services may allow direct command execution or interactive desktop access on target systems.",
+      "detection": "Monitor remote connection logs: RDP (Event ID 4624 LogonType 10), SSH (auth.log), SMB share access (Event ID 5140), WinRM (Event ID 91). Track lateral movement patterns: one source connecting to many targets. Alert on service account usage for interactive remote sessions."
+    },
+    {
+      "technique_id": "T1210",
+      "technique_name": "Exploitation of Remote Services",
+      "tactics": ["Lateral Movement"],
+      "description": "Adversaries may exploit vulnerable network services to move laterally between systems. Classic examples include EternalBlue (MS17-010 SMB), BlueKeep (CVE-2019-0708 RDP), and vulnerabilities in web applications hosted on internal servers. Exploitation may provide SYSTEM-level code execution.",
+      "detection": "Monitor for exploit detection signatures from NIDS/NIPS. Track unusual SMB/RDP traffic patterns and exploit-specific protocol anomalies. Correlate vulnerability scan results with network connection attempts. Alert on post-exploitation artifacts: unexpected service creation, new admin accounts."
+    },
+    {
+      "technique_id": "T1091",
+      "technique_name": "Replication Through Removable Media",
+      "tactics": ["Lateral Movement", "Initial Access"],
+      "description": "Adversaries may move onto systems through removable media (USB drives, external HDDs, SD cards) by copying malware and configuring autorun/autoplay features or by modifying the media's firmware. This can cross air-gapped network boundaries.",
+      "detection": "Monitor for autorun.inf creation on removable drives. Track USB device insertion events and correlation with subsequent malware execution. Detect hidden file creation and LNK file modification on removable media. Analyze firmware integrity for USB devices in sensitive environments."
+    },
+    {
+      "technique_id": "T1534",
+      "technique_name": "Internal Spearphishing",
+      "tactics": ["Lateral Movement"],
+      "description": "Adversaries may use internal spearphishing to move laterally after compromising email accounts within the organization. Using a compromised corporate email account, the adversary sends targeted phishing messages to other internal users, which appear more trustworthy than external phishing.",
+      "detection": "Monitor for internal email patterns: emails from compromised accounts containing unusual links or attachments, forwarding rules created to external addresses, and mass internal distribution to unusual recipient groups. Track email sending volume anomalies per user."
+    },
+    {
+      "technique_id": "T1119",
+      "technique_name": "Automated Collection",
+      "tactics": ["Collection"],
+      "description": "Adversaries may use automated techniques to collect internal data once established within a network. This includes scripts that recursively search through file shares and databases, automated screen capture schedules, and regular keylogging output. Automation enables collection at scale.",
+      "detection": "Monitor for scripts performing automated file search and copy operations. Track scheduled tasks or cron jobs created for data collection. Detect unusual file access patterns: large numbers of files read in quick succession by a non-backup process. Analyze data staging behavior in temporary directories."
+    },
+    {
+      "technique_id": "T1074",
+      "technique_name": "Data Staged",
+      "tactics": ["Collection"],
+      "description": "Adversaries may stage collected data in a central location or directory prior to exfiltration. Data may be staged in separate archive files or combined into one file. Common staging locations include temporary directories, recycle bins, hidden directories, or cloud-synced folders.",
+      "detection": "Monitor for creation of large compressed files in user-writable directories. Track unusual file accumulations in temporary or staging paths. Detect file operations (copy, move) aggregating data from multiple source directories into a single destination. Analyze disk space consumption anomalies."
+    },
+    {
+      "technique_id": "T1090",
+      "technique_name": "Proxy",
+      "tactics": ["Command and Control"],
+      "description": "Adversaries may use connection proxying to route network traffic through intermediate systems, obscuring the true destination of C2 communications. This includes internal proxy pivoting, external VPN/proxy services, TOR, and domain fronting. Proxies make traffic attribution and filtering more difficult.",
+      "detection": "Monitor for connections to known proxy/anonymization services and TOR entry nodes. Detect internal hosts being used as proxy relays (SOCKs, port forwarding). Analyze traffic for domain fronting indicators (TLS SNI mismatch with HTTP Host header). Track netflow for unexpected relay patterns."
+    },
+    {
+      "technique_id": "T1105",
+      "technique_name": "Ingress Tool Transfer",
+      "tactics": ["Command and Control"],
+      "description": "Adversaries may transfer tools or files from an external system into a compromised environment. Tools may be transferred through the C2 channel, via alternative protocols, or using legitimate web services (GitHub, Pastebin, cloud storage). This enables adversaries to bring in additional capabilities post-compromise.",
+      "detection": "Monitor network connections for downloads of executable content. Track file creation by network-facing processes (browser, email, chat). Detect use of living-off-the-land download tools: certutil -urlcache, bitsadmin, wget, curl. Inspect downloaded files for PE headers and script content."
+    },
+    {
+      "technique_id": "T1573",
+      "technique_name": "Encrypted Channel",
+      "tactics": ["Command and Control"],
+      "description": "Adversaries may encrypt C2 communications using standard protocols (TLS, SSH) or custom cryptographic schemes. Encryption hides the content of C2 commands and exfiltrated data from network inspection. Self-signed or Let's Encrypt certificates are commonly used to establish encrypted sessions.",
+      "detection": "Monitor for TLS connections with suspicious certificate characteristics: self-signed, mismatched CN/SAN, recently-issued certificates to new domains. Inspect JA3/JARM TLS fingerprint hashes against known-malicious fingerprints. Detect non-standard cipher suites and TLS version anomalies."
+    },
+    {
+      "technique_id": "T1572",
+      "technique_name": "Protocol Tunneling",
+      "tactics": ["Command and Control"],
+      "description": "Adversaries may tunnel one protocol within another to obfuscate C2 communications. Common tunnels include DNS tunneling (iodine, dnscat2), HTTP/HTTPS tunneling (reGeorg, tunna), SSH tunneling, and ICMP tunneling. Tunneling can circumvent network segmentation and egress filtering.",
+      "detection": "Monitor DNS traffic for unusual query patterns: high-entropy subdomains, TXT/CNAME record abuse, excessive queries per domain. Detect protocol anomalies: HTTP traffic on non-web ports, DNS-like traffic on ports other than 53. Analyze traffic volume ratios between protocol layers."
+    },
+    {
+      "technique_id": "T1537",
+      "technique_name": "Transfer Data to Cloud Account",
+      "tactics": ["Exfiltration"],
+      "description": "Adversaries may exfiltrate data to a cloud storage service under their control. This includes syncing staging directories to cloud-synced folders, uploading to cloud storage via API or CLI tools, or emailing data to webmail services. Legitimate cloud service traffic blends in with normal corporate cloud usage.",
+      "detection": "Monitor cloud service API usage: unusual upload volumes, new OAuth token grants, access from non-corporate IP ranges. Track cloud storage CLI tool usage (aws s3 cp, azcopy, gsutil cp). Analyze DNS queries for cloud storage domains paired with large upload volumes."
+    },
+    {
+      "technique_id": "T1485",
+      "technique_name": "Data Destruction",
+      "tactics": ["Impact"],
+      "description": "Adversaries may destroy data and files on specific systems or across the network to disrupt operations and hinder recovery. This includes file deletion (sdelete, rm -rf), disk wiping (raw write operations, diskpart clean), and master boot record (MBR) corruption. Data destruction may be targeted or widespread.",
+      "detection": "Monitor for mass file deletion operations and disk formatting commands. Track use of secure deletion tools (sdelete, shred, wipe). Alert on raw disk write operations targeting MBR or boot sectors. Detect rapid file timestamp changes (deletion then recreation) on large file sets."
+    },
+    {
+      "technique_id": "T1486",
+      "technique_name": "Data Encrypted for Impact",
+      "tactics": ["Impact"],
+      "description": "Adversaries may encrypt data on target systems to disrupt availability. This is the defining characteristic of ransomware. Modern ransomware variants combine strong encryption (AES, RSA), delete shadow copies/backups (vssadmin), and demand cryptocurrency payment for decryption keys.",
+      "detection": "Monitor for rapid file extension changes and high-entropy file writes (indicating encryption). Track vssadmin and wbadmin commands for shadow copy deletion. Detect ransomware notes (ransom note file creation) and background changes. Alert on file system activity far exceeding baseline modification rates."
+    },
+    {
+      "technique_id": "T1490",
+      "technique_name": "Inhibit System Recovery",
+      "tactics": ["Impact"],
+      "description": "Adversaries may disable or delete system recovery features to prevent restoration. This includes deleting volume shadow copies, disabling Windows Recovery Environment (WinRE), deleting backup catalogs, and disabling automatic repair. This is often a precursor to destructive actions like ransomware encryption.",
+      "detection": "Monitor for shadow copy deletion (vssadmin delete shadows, wmic shadowcopy delete). Track backup service stoppage and backup catalog deletion. Alert on boot configuration changes (bcdedit modifications). Detect Windows Recovery Environment tampering and system restore point deletion."
+    },
+    {
+      "technique_id": "T1498",
+      "technique_name": "Network Denial of Service",
+      "tactics": ["Impact"],
+      "description": "Adversaries may perform Network Denial of Service (DoS) attacks to degrade or block the availability of targeted resources. This includes direct network floods (SYN, UDP, HTTP GET/POST floods), amplification attacks (DNS, NTP, memcached), and application-layer DoS targeting specific service endpoints.",
+      "detection": "Monitor network traffic for volumetric anomalies: sudden traffic spikes, asymmetric packet flows, high SYN-to-ACK ratios. Detect amplification attack patterns based on known amplification factors. Track application response time degradation correlated with request rate increase."
+    },
+    {
+      "technique_id": "T1529",
+      "technique_name": "System Shutdown/Reboot",
+      "tactics": ["Impact"],
+      "description": "Adversaries may shutdown or reboot systems to disrupt access or interrupt running processes. Commands include 'shutdown /s /t 0', 'shutdown /r /t 0', 'reboot', 'halt'. This may be used to force the boot process into a compromised state or to remove forensic artifacts from memory.",
+      "detection": "Monitor for system shutdown and reboot commands. Track unexpected system restarts, especially outside maintenance windows. Correlate shutdown events with user sessions and determine if authorized. Alert on shutdown commands from non-administrative users or via remote execution."
+    },
+    {
+      "technique_id": "T1195",
+      "technique_name": "Supply Chain Compromise",
+      "tactics": ["Initial Access"],
+      "description": "Adversaries may manipulate products or product delivery mechanisms before receipt by the end consumer. This includes compromising software dependencies (npm, PyPI packages), build pipeline injection, firmware tampering, and hardware interdiction. Supply chain attacks can affect many downstream victims simultaneously.",
+      "detection": "Monitor for unauthorized changes to build pipelines and CI/CD configurations. Track dependency manifest modifications and new package additions. Verify artifact signatures and checksums against trusted build outputs. Audit software supply chain for unexpected code changes in update channels."
+    },
+    {
+      "technique_id": "T1557",
+      "technique_name": "Adversary-in-the-Middle",
+      "tactics": ["Credential Access", "Collection"],
+      "description": "Adversaries may position themselves between two communicating parties to intercept, modify, or relay communications. Techniques include ARP spoofing, DNS poisoning, LLMNR/NBNS spoofing, rogue DHCP servers, and TLS interception. This allows credential harvesting and traffic manipulation.",
+      "detection": "Monitor for ARP cache inconsistencies and gratuitous ARP broadcasts. Detect rogue DHCP servers offering conflicting leases. Track LLMNR/NBT-NS name resolution poisoning responses. Analyze TLS certificate chains for interception proxy signatures (untrusted root CA, mismatched issuer)."
+    },
+    {
+      "technique_id": "T1562",
+      "technique_name": "Impair Defenses",
+      "tactics": ["Defense Evasion"],
+      "description": "Adversaries may disable, modify, or bypass security tools to evade detection. This includes stopping AV/EDR services, disabling Windows Defender, unloading kernel drivers, modifying firewall rules, tampering with logging, and disabling alerting. Without defenses, adversaries can operate undetected.",
+      "detection": "Monitor for service stoppage of security products. Track registry modifications to disable Windows Defender (DisableAntiSpyware, DisableRealtimeMonitoring). Alert on attempts to unload security drivers or kill protected processes. Self-monitoring: if security telemetry stops, generate high-severity alert."
+    },
+    {
+      "technique_id": "T1070",
+      "technique_name": "Indicator Removal",
+      "tactics": ["Defense Evasion"],
+      "description": "Adversaries may remove or modify artifacts generated during their intrusion to avoid detection. This includes clearing Windows Event Logs, removing bash/shell history, deleting files, clearing command history, and manipulating file timestamps (timestomp). A clean trail complicates forensic investigation.",
+      "detection": "Monitor for event log clearing (Event ID 1102, 104). Track commands that delete shell history files (.bash_history, .zsh_history). Detect timestomp tools modifying file creation/modification timestamps. Send critical logs to centralized SIEM in real-time before local clearing can affect them."
+    },
+    {
+      "technique_id": "T1564",
+      "technique_name": "Hide Artifacts",
+      "tactics": ["Defense Evasion"],
+      "description": "Adversaries may attempt to hide artifacts associated with their behaviors to evade detection. This includes hidden files and directories (dot-prefixed on Linux, hidden attribute on Windows), hidden users, hidden windows, and use of NTFS Alternate Data Streams (ADS) to conceal payloads.",
+      "detection": "Monitor for creation of files with hidden attributes and dot-prefixed files in unusual locations. Detect use of Alternate Data Streams via dir /r or streams.exe. Track hidden window creation (SW_HIDE). Audit for hidden user accounts and modifications to user account control attributes."
+    },
+    {
+      "technique_id": "T1574",
+      "technique_name": "Hijack Execution Flow",
+      "tactics": ["Persistence", "Privilege Escalation", "Defense Evasion"],
+      "description": "Adversaries may hijack the way operating systems run programs by modifying search order, DLL load order, COM object registration, or service paths. Common techniques include DLL search order hijacking, PATH interception, and service binary replacement. The malicious code is loaded in place of legitimate software.",
+      "detection": "Monitor for modifications to PATH environment variables and DLL search paths. Detect changes to service binary paths (services.exe registry modifications). Track COM object registration changes and phantom DLL loads. Analyze process load events for DLLs loaded from unexpected search order positions."
+    },
+    {
+      "technique_id": "T1136",
+      "technique_name": "Create Account",
+      "tactics": ["Persistence"],
+      "description": "Adversaries may create new accounts on compromised systems to maintain persistence. This includes local accounts (net user /add), domain accounts, and cloud accounts. Accounts may be named to blend in with existing naming conventions or added to privileged groups for sustained elevated access.",
+      "detection": "Monitor for account creation events: Windows Event ID 4720 (local/domain user), Event ID 4722 (account enabled). Track new accounts immediately added to privileged groups (4728/4732/4756). Alert on account creation by non-IT users or outside normal provisioning workflows."
+    },
+    {
+      "technique_id": "T1543",
+      "technique_name": "Create or Modify System Process",
+      "tactics": ["Persistence", "Privilege Escalation"],
+      "description": "Adversaries may create or modify system-level processes to repeatedly execute malicious payloads. On Windows this includes Windows Service creation (sc create), on Linux/macOS this includes systemd service units, init scripts, and Launch Daemons. System processes run with elevated privileges and start at boot.",
+      "detection": "Monitor for new service creation (Event ID 4697, 7045). Track modifications to systemd unit files, init.d scripts, and LaunchDaemon plist files. Alert on services configured to auto-start with SYSTEM or root privileges. Detect services with binary paths pointing to user-writable directories."
+    },
+    {
+      "technique_id": "T1218",
+      "technique_name": "System Binary Proxy Execution",
+      "tactics": ["Defense Evasion"],
+      "description": "Adversaries may use trusted system binaries (LOLBins) to proxy execution of malicious code. Examples include rundll32.exe, regsvr32.exe, mshta.exe, certutil.exe, and msiexec.exe on Windows. These signed Microsoft binaries bypass application control and are often allowlisted by security software.",
+      "detection": "Monitor for LOLBin executions with suspicious parameters: rundll32 calling URLs or JavaScript, regsvr32 with /i:http://, mshta with remote scripts, certutil with -urlcache. Track parent-child process relationships that deviate from normal patterns. Correlate LOLBin activity with network connections."
+    },
+    {
+      "technique_id": "T1106",
+      "technique_name": "Native API",
+      "tactics": ["Execution"],
+      "description": "Adversaries may use native OS APIs to execute behaviors rather than command-line utilities. On Windows, Native API calls (Nt/Zw functions via syscall) bypass user-mode security hooks and can evade EDR. Common examples include direct syscall invocation of NtCreateProcess/NtOpenProcess for process injection.",
+      "detection": "Monitor for direct syscall patterns and unusual API invocation sequences. Track attempts to map ntdll.dll from disk to bypass user-mode hooks. Detect syscall stub assembly patterns in loaded modules. Use kernel-mode callbacks and ETW providers for syscall tracing where feasible."
+    },
+    {
+      "technique_id": "T1001",
+      "technique_name": "Data Obfuscation",
+      "tactics": ["Command and Control"],
+      "description": "Adversaries may obfuscate command and control traffic to make it more difficult to detect. This includes using steganography to hide data in images or other media files, adding junk data to pad protocol fields, and employing custom encoding schemes that deviate from standard protocol implementations.",
+      "detection": "Inspect network protocol payloads for deviations from expected formats and encoding. Analyze file transfers for steganographic content (image file size anomalies, color histogram deviations). Detect protocol fields with high entropy that typically contain structured data. Monitor for non-standard Base64/hex encoding in text-based protocols."
+    },
+    {
+      "technique_id": "T1037",
+      "technique_name": "Boot or Logon Initialization Scripts",
+      "tactics": ["Persistence", "Privilege Escalation"],
+      "description": "Adversaries may use scripts automatically executed during boot or logon to maintain persistence. On Windows this includes logon scripts in Group Policy and profile-based scripts. On Linux/macOS this includes .bash_profile, .bashrc, .zshrc, and rc.common startup scripts. These run in the user's context at logon.",
+      "detection": "Monitor for modifications to logon script paths in registry and GPO. Track changes to shell profile files (.bashrc, .profile, .zshrc) and rc.common. Detect scripts added to user profile directories that execute on logon. Alert on logon scripts referencing binaries in non-standard locations."
+    },
+    {
+      "technique_id": "T1518",
+      "technique_name": "Software Discovery",
+      "tactics": ["Discovery"],
+      "description": "Adversaries may enumerate installed software to identify security products, vulnerable applications, and potential targets. Commands include 'wmic product get name', listing /Applications (macOS), querying package managers (dpkg -l, rpm -qa), and checking browser extensions. This informs tool selection and exploit targeting.",
+      "detection": "Monitor for software inventory commands ('wmic product', 'Get-Package', 'dpkg -l'). Track registry enumeration of uninstall keys (HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall). Alert on browser extension enumeration. Correlate software discovery with subsequent targeted exploitation."
+    },
+    {
+      "technique_id": "T1049",
+      "technique_name": "System Network Connections Discovery",
+      "tactics": ["Discovery"],
+      "description": "Adversaries may attempt to discover active network connections to and from compromised systems. Commands include 'netstat -ano', 'ss -tlnp', and 'Get-NetTCPConnection'. This reveals listening services, connected clients, C2 connections, and potential lateral movement targets.",
+      "detection": "Monitor for network connection enumeration commands. Track automated scripts that repeatedly query active connections. Alert on service accounts enumerating network state. Correlate connection discovery with subsequent connections to previously uncontacted internal hosts."
+    },
+    {
+      "technique_id": "T1608",
+      "technique_name": "Stage Capabilities",
+      "tactics": ["Resource Development"],
+      "description": "Adversaries may upload, install, or otherwise set up capabilities that can be used during targeting. This includes staging malware on compromised websites or cloud storage, creating lookalike domains, registering accounts on third-party services, and preparing C2 infrastructure before an operation begins.",
+      "detection": "Monitor threat intelligence feeds for newly-registered domains with characteristics similar to your brand. Track DNS registration patterns for suspicious domains. Monitor for malware staging URLs shared on threat intel platforms. Proactively scan for credential harvesting pages impersonating your organization."
+    },
+    {
+      "technique_id": "T1595",
+      "technique_name": "Active Scanning",
+      "tactics": ["Reconnaissance"],
+      "description": "Adversaries may actively scan target networks, infrastructure, and web applications to gather information that can be used during targeting. This includes port scanning, vulnerability scanning, web application scanning, and DNS zone enumeration. Scanning may be performed directly or through compromised intermediary systems.",
+      "detection": "Monitor for scan patterns in external-facing infrastructure: sequential port access, rapid HTTP requests across endpoints, web vulnerability scanner user agents. Correlate external scan activity with subsequent targeted attacks. Use honeypot services to detect and alarm on reconnaissance activity."
+    },
+    {
+      "technique_id": "T1598",
+      "technique_name": "Phishing for Information",
+      "tactics": ["Reconnaissance"],
+      "description": "Adversaries may send phishing messages to elicit sensitive information from victims. This includes sending emails with links to credential harvesting pages, social engineering phone calls, and impersonating IT support on messaging platforms. Information gathered is used to plan and execute intrusions.",
+      "detection": "Monitor email gateway for messages with suspicious links, urgency language, and domain impersonation. Track access to newly-registered domains mimicking corporate login pages. Flag external emails requesting credentials or MFA codes. Implement user reporting mechanisms for suspected phishing."
+    },
+    {
+      "technique_id": "T1080",
+      "technique_name": "Taint Shared Content",
+      "tactics": ["Lateral Movement"],
+      "description": "Adversaries may deliver payloads to remote systems by adding malicious content to shared storage locations, such as network file shares or cloud-synced folders. When users or automated processes access the tainted content, the payload is executed, enabling lateral movement.",
+      "detection": "Monitor shared storage for unexpected file creation or modification by non-owner accounts. Track LNK file creation in shared directories. Detect executable content placed in shared document repositories. Alert on files in network shares set with hidden attributes or suspicious extensions."
+    },
+    {
+      "technique_id": "T1072",
+      "technique_name": "Software Deployment Tools",
+      "tactics": ["Execution", "Lateral Movement"],
+      "description": "Adversaries may use enterprise software deployment tools (SCCM, PDQ Deploy, Chocolatey, Ansible, Puppet, GPO) to execute code across many systems simultaneously. Access to these tools provides a trusted mechanism for distributing malware to large numbers of hosts.",
+      "detection": "Monitor deployment tool activity logs for unauthorized software distribution. Track GPO modifications that deploy or execute new software. Alert on use of deployment credentials outside normal change windows. Correlate software package deployments with asset inventory to detect unapproved applications."
+    },
+    {
+      "technique_id": "T1480",
+      "technique_name": "Execution Guardrails",
+      "tactics": ["Defense Evasion"],
+      "description": "Adversaries may use execution guardrails (environment checks) to constrain execution to intended targets. This includes checking domain membership, computer name, user locale, system language, time zones, and specific file/directory presence. Malware may self-delete or sleep indefinitely if guardrails are not met.",
+      "detection": "Difficult to detect in isolation as guardrail checks use benign OS APIs. Focus on detecting the surrounding behaviors: reconnaissance commands checking domain membership, locale, and computer name occurring in rapid succession before known-malicious activity. Combine with threat intelligence on actor-specific guardrail preferences."
+    },
+    {
+      "technique_id": "T1070.001",
+      "technique_name": "Indicator Removal: Clear Windows Event Logs",
+      "tactics": ["Defense Evasion"],
+      "description": "Adversaries may clear Windows Event Logs to hide their activity. This can be done via wevtutil cl, Clear-EventLog, or direct Event Log API calls. Clearing the Security log (Event ID 1102) is particularly concerning as it removes the audit trail of authentication, account management, and policy changes.",
+      "detection": "Monitor for Event ID 1102 (Security log cleared) and Event ID 104 (other log cleared). Configure event log subscriptions to forward events to a SIEM before local clearing. Implement GPO to prevent non-admin users from clearing event logs. Track wevtutil and Clear-EventLog command execution."
+    },
+    {
+      "technique_id": "T1053",
+      "technique_name": "Scheduled Task/Job",
+      "tactics": ["Execution", "Persistence", "Privilege Escalation"],
+      "description": "Adversaries may abuse task scheduling functionality to execute programs at a specific time or on a recurring basis. On Windows this includes Scheduled Tasks (schtasks), on Linux/macOS this includes cron jobs and at jobs. Scheduled tasks may be configured to run with SYSTEM/root privileges and survive reboots.",
+      "detection": "Monitor for scheduled task creation (Event ID 4698) and modification (Event ID 4702). Track new or modified crontab entries and at job files. Alert on tasks configured to run from temporary directories or user-writable paths. Detect tasks with SYSTEM/Root privileges created by non-admin users."
+    },
+    {
+      "technique_id": "T1546",
+      "technique_name": "Event Triggered Execution",
+      "tactics": ["Persistence", "Privilege Escalation"],
+      "description": "Adversaries may establish persistence or elevate privileges using mechanisms that execute code in response to system events. This includes WMI event subscriptions, Accessibility Features backdoors (sethc.exe, utilman.exe replacement), AppCert DLLs, Image File Execution Options (IFEO), and Netsh Helper DLLs.",
+      "detection": "Monitor for WMI permanent event subscription creation (Event ID 5861). Track modifications to accessibility feature executables and registry IFEO Debugger keys. Detect AppCertDlls registry value creation. Alert on Netsh helper DLL registration. Inspect autoruns entries triggered by specific system events."
+    },
+    {
+      "technique_id": "T1569",
+      "technique_name": "System Services",
+      "tactics": ["Execution"],
+      "description": "Adversaries may abuse system services to execute commands or programs. On Windows this includes using 'sc start', 'net start', or direct service control manager APIs. On Linux/macOS this includes systemctl, service, and launchctl. Service execution typically runs with elevated privileges.",
+      "detection": "Monitor for unexpected service start commands issued by non-administrative users. Track service creation followed by immediate service start. Detect services running with LOCAL SYSTEM or root that execute user-writable binaries. Alert on use of PsExec or similar service-based lateral movement tools."
+    },
+    {
+      "technique_id": "T1047",
+      "technique_name": "Windows Management Instrumentation",
+      "tactics": ["Execution"],
+      "description": "Adversaries may abuse Windows Management Instrumentation (WMI) to execute malicious commands and payloads. WMI provides a powerful interface for local and remote system management, including process creation (Win32_Process.Create), service management, registry access, and file operations.",
+      "detection": "Monitor WMI process creation events (Event ID 4688 with parent wmiprvse.exe). Track WMI permanent event subscriptions. Alert on WMI usage from non-admin workstations targeting servers. Detect WMI scripting via wmic.exe and PowerShell WMI cmdlets from unexpected processes."
+    },
+    {
+      "technique_id": "T1134",
+      "technique_name": "Access Token Manipulation",
+      "tactics": ["Defense Evasion", "Privilege Escalation"],
+      "description": "Adversaries may modify access tokens to impersonate other users or processes. This includes token duplication, token stealing (stealing SYSTEM token from a service), and manipulating token privileges (enabling SeDebugPrivilege, SeImpersonatePrivilege). Token manipulation can allow code to run under a different security context.",
+      "detection": "Monitor for process token privilege changes (Event ID 4703 with SeDebugPrivilege, SeImpersonatePrivilege, SeAssignPrimaryTokenPrivilege). Track process creation with mismatched parent and child security contexts. Detect use of runas and token manipulation tool signatures."
+    },
+    {
+      "technique_id": "T1222",
+      "technique_name": "File and Directory Permissions Modification",
+      "tactics": ["Defense Evasion"],
+      "description": "Adversaries may modify file or directory permissions to evade access controls. On Windows this includes using icacls, takeown, and cacls. On Linux/macOS this includes chmod, chown, chflags, and setfacl. Changing permissions may grant the adversary access to protected files or prevent security products from accessing malicious files.",
+      "detection": "Monitor for permission modification commands targeting security-related files and directories. Track ownership changes on sensitive system files. Alert on processes taking ownership of files owned by SYSTEM or TrustedInstaller. Detect recursive permission changes across large directory trees."
+    }
+  ]
+}

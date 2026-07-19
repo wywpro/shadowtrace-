@@ -12,6 +12,31 @@ from app.db.orm.knowledge import KnowledgeChunkORM
 from app.models.knowledge import KnowledgeChunk, RetrievedChunk
 
 
+def _merge_hybrid_results(
+    vector_hits: list[RetrievedChunk],
+    keyword_hits: list[RetrievedChunk],
+    top_k: int,
+) -> list[RetrievedChunk]:
+    """Merge vector and keyword hits by chunk_id, keeping the best score."""
+    merged: dict[str, RetrievedChunk] = {}
+    for hit in vector_hits:
+        merged[hit.chunk_id] = hit
+    for hit in keyword_hits:
+        existing = merged.get(hit.chunk_id)
+        if existing is None:
+            merged[hit.chunk_id] = hit
+            continue
+        merged[hit.chunk_id] = RetrievedChunk(
+            chunk_id=existing.chunk_id,
+            kb_name=existing.kb_name,
+            content=existing.content,
+            metadata=existing.metadata,
+            score=max(existing.score, hit.score),
+            retrieval_method="hybrid",
+        )
+    return sorted(merged.values(), key=lambda row: row.score, reverse=True)[:top_k]
+
+
 class KnowledgeStore:
     """Persist knowledge chunks and serve vector / keyword search.
 
@@ -134,6 +159,24 @@ class KnowledgeStore:
                 )
                 for row in result.fetchall()
             ]
+
+    async def hybrid_search(
+        self,
+        kb_name: str,
+        query_text: str,
+        *,
+        keyword_query: str | None = None,
+        top_k: int = 10,
+    ) -> list[RetrievedChunk]:
+        """Vector search plus keyword fallback, merged by chunk_id."""
+        query_vec = await self._embed.embed_query(query_text)
+        vector_hits = await self.vector_search(kb_name, query_vec, top_k=top_k)
+        keyword_hits = await self.keyword_search(
+            kb_name,
+            keyword_query if keyword_query is not None else query_text,
+            top_k=top_k,
+        )
+        return _merge_hybrid_results(vector_hits, keyword_hits, top_k)
 
     async def count(self, kb_name: str) -> int:
         """Return the number of chunks stored in *kb_name*."""
