@@ -52,10 +52,10 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 SEVERITY_RULES: dict[str, list[tuple[str, str]]] = {
-    # NOTE: P0 simplification — all data_exfiltration → HIGH regardless of
-    # external IP presence (ISSUE-032 originally said "数据外泄类加外部 IP 为
-    # high"). In practice data exfiltration alerts almost always contain an
-    # external IP; refining this check is deferred to a future issue.
+    # data_exfiltration with an external IP present → HIGH (ISSUE-032 spec:
+    # "数据外泄类加外部 IP 为 high").  Without an external IP (e.g. pure
+    # internal server-to-server exfiltration) severity is MEDIUM — the check
+    # is applied in _apply_severity_rules via _external_ip_in_text().
     "high": [
         ("event_type", "data_exfiltration"),
         ("event_type", "malicious_process"),
@@ -63,7 +63,8 @@ SEVERITY_RULES: dict[str, list[tuple[str, str]]] = {
         ("event_type", "lateral_movement"),
     ],
     # data_exfiltration + lateral_movement co-occurrence → critical (checked
-    # in _apply_severity_rules via alert_text keyword "lateral").
+    # in _apply_severity_rules via alert_text word-boundary match on
+    # "lateral" so words like "bilateral"/"collateral" are excluded).
     "critical": [
         ("event_type", "data_exfiltration"),
     ],
@@ -193,13 +194,24 @@ def _apply_severity_rules(
     for rule_key, rule_val in SEVERITY_RULES.get("critical", []):
         if rule_key == "event_type" and rule_val == event_type_value:
             # Critical: data_exfiltration with lateral movement co-occurrence.
-            if alert_text and "lateral" in alert_text.lower():
+            # Use word-boundary match to avoid false positives on "bilateral",
+            # "collateral", etc.
+            if alert_text and _re.search(r"\blateral\b", alert_text.lower()):
                 severity = Severity.CRITICAL
                 return severity, True
 
     # Check high rules.
     for rule_key, rule_val in SEVERITY_RULES.get("high", []):
         if rule_key == "event_type" and rule_val == event_type_value:
+            # ISSUE-032 spec: data_exfiltration → HIGH only when an external
+            # IP is present in the alert text.  Pure internal exfiltration
+            # (no external IP) → MEDIUM.
+            if event_type_value == "data_exfiltration":
+                if alert_text and _external_ip_in_text(alert_text):
+                    severity = Severity.HIGH
+                    return severity, True
+                severity = Severity.MEDIUM
+                return severity, True
             severity = Severity.HIGH
             return severity, True
 
@@ -227,6 +239,18 @@ def _apply_severity_rules(
     # Default for unlisted event types: medium.
     severity = Severity.MEDIUM
     return severity, True
+
+
+def _external_ip_in_text(alert_text: str) -> bool:
+    """Return True when *alert_text* contains at least one external (non-internal) IP.
+
+    Used by ``_apply_severity_rules`` to decide whether a data_exfiltration
+    event qualifies for HIGH severity per ISSUE-032.
+    """
+    for ip_match in IP_PATTERN.findall(alert_text):
+        if not is_internal_ip(ip_match):
+            return True
+    return False
 
 
 def _extract_iocs(
@@ -298,7 +322,7 @@ def _map_event_type(
         return EventType.LATERAL_MOVEMENT
     if "host" in text or "compromise" in text or "infected" in text:
         return EventType.HOST_COMPROMISE
-    if "insider" in text or "privilege" in text or "escalat" in text:
+    if "insider" in text or "privilege" in text or "escalation" in text:
         return EventType.INSIDER_THREAT
     return EventType.OTHER
 
@@ -465,21 +489,34 @@ class TriageAgent(BaseAgent[TriageAgentInput, TriageResult]):
 
             if response.parsed is not None and isinstance(response.parsed, TriageLLMResponse):
                 parsed: TriageLLMResponse = response.parsed
-                return parsed.entities, response.fallback_level > 0, parsed.reasoning
+                # fallback_level > 0 means the LLM primary model was unavailable
+                # and a fallback model succeeded.  This is NOT a degradation to
+                # regex — the LLM path still produced a valid result.  degraded
+                # is only True when the LLM path fails entirely and we fall back
+                # to regex extraction.
+                return parsed.entities, False, parsed.reasoning
 
             # Parsed successfully but unexpected type — use regex.
             entities = await self._regex_fallback(alert_text)
             return entities, True, ""
 
-        except (LLMError, ShadowTraceError) as exc:
+        except ShadowTraceError as exc:
             # Known failure modes: timeout, auth, rate-limit, provider error,
             # invalid JSON → all degrade gracefully to regex.
-            logger.warning(
-                "LLM entity extraction failed for event=%s: %s",
-                event_id,
-                exc,
-                exc_info=True,
-            )
+            if isinstance(exc, LLMError):
+                logger.warning(
+                    "LLM entity extraction failed for event=%s: %s",
+                    event_id,
+                    exc,
+                    exc_info=True,
+                )
+            else:
+                logger.warning(
+                    "ShadowTrace error during entity extraction for event=%s: %s",
+                    event_id,
+                    exc,
+                    exc_info=True,
+                )
             entities = await self._regex_fallback(alert_text)
             return entities, True, ""
 
@@ -550,8 +587,10 @@ class TriageAgent(BaseAgent[TriageAgentInput, TriageResult]):
         GuardrailViolationError (FIELD_OWNERSHIP mismatch) is always
         propagated — it indicates a code defect that must be fixed.
         Transient I/O failures are logged AND reflected on the result
-        (``degraded=True``, reasoning annotation) so the caller knows
-        this triage product was not durably persisted.
+        (``degraded=True``, reasoning annotation).  A lightweight
+        ``triage_degraded`` flag is written separately so that downstream
+        agents / recovery logic can detect the persistence gap even if the
+        full result was not durably stored.
         """
         wm = self.working_memory
         if wm is None:
@@ -583,6 +622,9 @@ class TriageAgent(BaseAgent[TriageAgentInput, TriageResult]):
             result.reasoning += (
                 "triage_result persistence failed: working memory unavailable"
             )
+            # Best-effort persistence of the degraded flag so recovery /
+            # downstream agents can detect the gap.
+            await self._try_persist_degraded_flag(input.event_id)
         except ShadowTraceError as exc:
             if exc.retryable:
                 logger.warning(
@@ -597,8 +639,36 @@ class TriageAgent(BaseAgent[TriageAgentInput, TriageResult]):
                 result.reasoning += (
                     f"triage_result persistence failed: {exc.error_code}"
                 )
+                await self._try_persist_degraded_flag(input.event_id)
             else:
                 raise
+
+    async def _try_persist_degraded_flag(self, event_id: str) -> None:
+        """Best-effort write of a lightweight ``triage_degraded`` flag.
+
+        Called when the main ``triage_result`` write fails transiently.
+        If even this lightweight write fails the error is logged but never
+        propagated — the in-memory ``result.degraded=True`` is the final
+        fallback for the immediate caller.
+        """
+        wm = self.working_memory
+        if wm is None:
+            return
+        try:
+            await wm.write(
+                event_id,
+                "triage_degraded",
+                {
+                    "degraded": True,
+                    "reason": "triage_result persistence failed",
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist triage_degraded flag for event=%s",
+                event_id,
+            )
 
     # ------------------------------------------------------------------ #
     # Helpers
@@ -607,9 +677,10 @@ class TriageAgent(BaseAgent[TriageAgentInput, TriageResult]):
     async def _read_source_snapshot(self, event_id: str) -> dict[str, Any] | None:
         """Read the ``source_snapshot`` field from working memory.
 
-        Only known recoverable errors (transient I/O, guardrail) are caught
-        so programming errors (AttributeError, TypeError, KeyError) propagate
-        and are surfaced rather than silently swallowed.
+        Transient I/O failures return None so the agent can continue with
+        fallback keyword matching.  ``GuardrailViolationError`` is propagated
+        because it indicates a code defect (e.g. FIELD_OWNERSHIP mismatch)
+        that must be surfaced, consistent with ``_write_triage_result``.
         """
         wm = self.working_memory
         if wm is None:
@@ -617,12 +688,13 @@ class TriageAgent(BaseAgent[TriageAgentInput, TriageResult]):
         try:
             value = await wm.read(event_id, "source_snapshot")
             return value if isinstance(value, dict) else None
-        except (
-            DependencyUnavailableError,
-            ConnectionError,
-            TimeoutError,
-            GuardrailViolationError,
-        ):
+        except GuardrailViolationError:
+            logger.exception(
+                "GuardrailViolationError reading source_snapshot for event=%s",
+                event_id,
+            )
+            raise
+        except (DependencyUnavailableError, ConnectionError, TimeoutError):
             return None
 
 
@@ -630,4 +702,9 @@ __all__ = [
     "RuleBasedFalsePositiveHook",
     "SEVERITY_RULES",
     "TriageAgent",
+    "_apply_severity_rules",
+    "_extract_iocs",
+    "_external_ip_in_text",
+    "_map_event_type",
+    "_merge_hint_entities",
 ]

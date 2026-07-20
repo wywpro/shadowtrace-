@@ -147,11 +147,20 @@ def build_triage_messages(alert_text: str) -> list[LLMMessage]:
     """Return ``[system, user]`` messages for the LLM entity-extraction call.
 
     Args:
-        alert_text: The raw alert text / summary to parse.
+        alert_text: The raw alert text / summary to parse.  Must be a non-empty
+            string.  Callers are responsible for truncating excessively long
+            inputs before calling this function.
 
     Returns:
         A two-element message list ready for ``BaseLLMClient.chat``.
+
+    Raises:
+        ValueError: If *alert_text* is None or an empty string.
     """
+    if not alert_text or not isinstance(alert_text, str):
+        raise ValueError(
+            f"alert_text must be a non-empty string, got {type(alert_text).__name__!r}"
+        )
     return [
         LLMMessage(role="system", content=TRIAGE_SYSTEM_PROMPT),
         LLMMessage(role="user", content=f"Alert: {alert_text}"),

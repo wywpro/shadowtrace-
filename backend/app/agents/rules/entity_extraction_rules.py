@@ -41,16 +41,17 @@ _HOSTNAME_PATTERN: re.Pattern[str] = re.compile(
     r"|"
     r"[A-Za-z]{2,}\d{1,4}"                             # PC-FIN-023 style
     r"|"
-    r"[A-Za-z][A-Za-z0-9_]*-(?:SRV|DC|DB|WEB|OPS|FIN|SQL|AD|FS|APP|JUMP|ADMIN)"
+    r"[A-Za-z][A-Za-z0-9_]*-(?:SRV|DC|DB|WEB|OPS|FIN|SQL|AD|FS|APP|JUMP|ADMIN|MAIL|PROXY|VPN|NODE|PRD|STG|DEV)"
     r"[A-Za-z0-9_-]*"  # known role suffixes
     r"[A-Za-z0-9_-]*"
     r")"
     r"\b"
 )
 
-# Account / username — quoted or bare.
+# Account / username — quoted or bare.  Supports English prefixes (account, user,
+# username) and Chinese prefixes (账号, 用户, 用户名) for mixed-language alerts.
 _ACCOUNT_PATTERN: re.Pattern[str] = re.compile(
-    r'(?:account|user|username)\s+["\']?([A-Za-z][A-Za-z0-9@._-]{1,63})["\']?',
+    r'(?:account|user|username|账号|用户|用户名)\s+["\']?([A-Za-z][A-Za-z0-9@._-]{1,63})["\']?',
     re.IGNORECASE,
 )
 

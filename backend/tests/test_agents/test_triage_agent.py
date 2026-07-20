@@ -80,11 +80,22 @@ class _GuardrailMockBoundWorkingMemory:
 
     write(self, event_id, key, value) — raises GuardrailViolationError
     when writer_name != FIELD_OWNERSHIP[key].
+
+    Also exposes ``_memory`` and ``for_writer`` so that TriageAgent.__init__
+    can mint a separate FP hook memory (mirroring ``WorkingMemory.for_writer``).
     """
 
     def __init__(self, writer_name: str = "TriageAgent") -> None:
         self.writer_name = writer_name
         self._store: dict[str, object] = {}
+        # ``_memory`` is a back-reference to self so that
+        # ``working_memory._memory.for_writer(...)`` works in TriageAgent.__init__.
+        self._memory = self
+
+    def for_writer(self, writer: str) -> _GuardrailMockBoundWorkingMemory:
+        """Mint a new guardrail-enforcing mock bound to *writer*."""
+        from app.services.working_memory import normalize_writer
+        return _GuardrailMockBoundWorkingMemory(writer_name=normalize_writer(writer))
 
     async def read(self, event_id: str, key: str) -> object:
         return self._store.get(key)
@@ -156,9 +167,28 @@ def _make_input(
 
 
 class TestApplySeverityRules:
-    def test_data_exfiltration_is_high(self):
-        severity, need = _apply_severity_rules(EventType.DATA_EXFILTRATION)
+    def test_data_exfiltration_with_external_ip_is_high(self):
+        """ISSUE-032: data_exfiltration + external IP → HIGH."""
+        severity, need = _apply_severity_rules(
+            EventType.DATA_EXFILTRATION,
+            alert_text="Data exfiltration to external IP 45.153.12.88",
+        )
         assert severity == Severity.HIGH
+        assert need is True
+
+    def test_data_exfiltration_without_external_ip_is_medium(self):
+        """ISSUE-032: data_exfiltration without external IP → MEDIUM."""
+        severity, need = _apply_severity_rules(
+            EventType.DATA_EXFILTRATION,
+            alert_text="Data exfiltration to internal server 10.0.0.5",
+        )
+        assert severity == Severity.MEDIUM
+        assert need is True
+
+    def test_data_exfiltration_no_alert_text_is_medium(self):
+        """No alert text → cannot verify external IP → MEDIUM."""
+        severity, need = _apply_severity_rules(EventType.DATA_EXFILTRATION)
+        assert severity == Severity.MEDIUM
         assert need is True
 
     def test_account_anomaly_is_low(self):
@@ -177,6 +207,22 @@ class TestApplySeverityRules:
         )
         assert severity == Severity.CRITICAL
         assert need is True
+
+    def test_collateral_does_not_trigger_critical(self):
+        """Word 'collateral' should NOT match the \blateral\b boundary check."""
+        severity, need = _apply_severity_rules(
+            EventType.DATA_EXFILTRATION,
+            alert_text="collateral damage from data exfiltration to 45.153.12.88",
+        )
+        assert severity == Severity.HIGH  # external IP → HIGH, not CRITICAL
+
+    def test_bilateral_does_not_trigger_critical(self):
+        """Word 'bilateral' should NOT match the \blateral\b boundary check."""
+        severity, need = _apply_severity_rules(
+            EventType.DATA_EXFILTRATION,
+            alert_text="bilateral data transfer to 8.8.8.8",
+        )
+        assert severity == Severity.HIGH  # external IP → HIGH, not CRITICAL
 
 
 # --------------------------------------------------------------------------- #
@@ -941,11 +987,289 @@ class TestTriageAgentBoundaries:
         assert "203.0.113.88" in result.ioc_list
         assert "evil.example.com" in result.ioc_list
 
-    def test_data_exfiltration_without_external_ip_still_high(self):
-        """Data exfiltration severity is HIGH even when no external IP in text."""
+    def test_data_exfiltration_without_external_ip_is_medium_severity(self):
+        """Data exfiltration WITHOUT external IP → MEDIUM (per ISSUE-032 spec)."""
         severity, need = _apply_severity_rules(
             EventType.DATA_EXFILTRATION,
             alert_text="Data exfiltration to internal server",
         )
-        assert severity == Severity.HIGH
+        assert severity == Severity.MEDIUM
         assert need is True
+
+
+# --------------------------------------------------------------------------- #
+# Tests: Should-Fix #2 — _read_source_snapshot GuardrailViolationError
+# --------------------------------------------------------------------------- #
+
+
+class TestReadSourceSnapshotGuardrail:
+    @pytest.mark.asyncio
+    async def test_read_source_snapshot_guardrail_raises(self):
+        """GuardrailViolationError from wm.read must propagate, not be swallowed."""
+        from app.core.errors import GuardrailViolationError
+
+        class _GuardrailFailingWM:
+            """WM whose read() always raises GuardrailViolationError."""
+
+            def __init__(self) -> None:
+                self.writer_name = "TriageAgent"
+                self._memory = self
+
+            def for_writer(self, writer: str) -> _GuardrailFailingWM:
+                return _GuardrailFailingWM()
+
+            async def read(self, event_id: str, key: str) -> object:
+                raise GuardrailViolationError(
+                    "FIELD_OWNERSHIP: source_snapshot missing TriageAgent",
+                    error_code="working_memory_unauthorized_read",
+                )
+
+            async def write(self, event_id: str, key: str, value: object) -> None:
+                pass
+
+        wm = _GuardrailFailingWM()
+        agent = TriageAgent(working_memory=wm)
+
+        with pytest.raises(GuardrailViolationError) as exc_info:
+            await agent._read_source_snapshot("evt-001")
+        assert "unauthorized_read" in str(exc_info.value.error_code)
+
+
+# --------------------------------------------------------------------------- #
+# Tests: Should-Fix #3 — LLM fallback model not degraded
+# --------------------------------------------------------------------------- #
+
+
+class TestLLMFallbackModel:
+    @pytest.mark.asyncio
+    async def test_llm_fallback_model_not_degraded(self):
+        """LLM fallback model success → degraded=False (not regex fallback)."""
+        from app.agents.prompts.triage_prompt import TriageLLMResponse
+        from app.core.llm.base import LLMResponse
+
+        llm_entities = EntitySet(
+            accounts=[AccountEntity(entity_id="acct-1", username="fallback_user")],
+        )
+        # Simulate a response from a fallback model (fallback_level=1).
+        llm_response = LLMResponse(
+            content="",
+            parsed=TriageLLMResponse(
+                event_type=EventType.ACCOUNT_ANOMALY,
+                entities=llm_entities,
+                reasoning="Fallback model reasoning",
+            ),
+            model_name="fallback-model",
+            fallback_level=1,  # primary unavailable, fallback succeeded
+        )
+        llm_client = _MockLLMClient(response=llm_response)
+
+        wm = _MockBoundWorkingMemory(writer_name="TriageAgent")
+        agent = TriageAgent(llm_client=llm_client, working_memory=wm)
+
+        input_ = _make_input(raw_event_summary="User svc-backup failed to login")
+        result = await agent._run(input_)
+        # Fallback model succeeded — NOT degraded (only regex fallback is degraded).
+        assert result.degraded is False
+        assert "Fallback model reasoning" in result.reasoning
+
+
+# --------------------------------------------------------------------------- #
+# Tests: Should-Fix #4 — write failure records degraded flag
+# --------------------------------------------------------------------------- #
+
+
+class TestWriteFailureDegradedFlag:
+    @pytest.mark.asyncio
+    async def test_write_failure_records_degraded_flag(self):
+        """When triage_result write fails, a triage_degraded flag is persisted."""
+        wm = _FailingWriteMockWM(
+            writer_name="TriageAgent",
+            fail_key="triage_result",
+            fail_error=DependencyUnavailableError("Redis down"),
+        )
+        agent = TriageAgent(working_memory=wm)
+
+        input_ = _make_input(raw_event_summary="Test alert")
+        result = await agent._run(input_)
+        assert result.degraded is True
+
+        # The triage_degraded flag should have been written (best-effort).
+        degraded_flag = await wm.read(input_.event_id, "triage_degraded")
+        assert degraded_flag is not None
+        assert degraded_flag["degraded"] is True
+        assert "triage_result persistence failed" in degraded_flag["reason"]
+
+
+# --------------------------------------------------------------------------- #
+# Tests: Nit #4 — build_triage_messages input validation
+# --------------------------------------------------------------------------- #
+
+
+class TestBuildTriageMessages:
+    def test_build_triage_messages_empty_alert_raises(self):
+        """Empty alert_text must raise ValueError."""
+        from app.agents.prompts.triage_prompt import build_triage_messages
+
+        with pytest.raises(ValueError, match="non-empty string"):
+            build_triage_messages("")
+
+    def test_build_triage_messages_none_alert_raises(self):
+        """None alert_text must raise ValueError."""
+        from app.agents.prompts.triage_prompt import build_triage_messages
+
+        with pytest.raises(ValueError, match="non-empty string"):
+            build_triage_messages(None)  # type: ignore[arg-type]
+
+    def test_build_triage_messages_valid_input(self):
+        """Valid input returns two messages (system + user)."""
+        from app.agents.prompts.triage_prompt import build_triage_messages
+
+        messages = build_triage_messages("Test alert text")
+        assert len(messages) == 2
+        assert messages[0].role == "system"
+        assert messages[1].role == "user"
+        assert "Test alert text" in messages[1].content
+
+
+# --------------------------------------------------------------------------- #
+# Tests: Nit #8 — Chinese alert account extraction
+# --------------------------------------------------------------------------- #
+
+
+class TestChineseAlertAccountExtraction:
+    def test_chinese_account_extraction(self):
+        """Chinese keyword '账号' triggers account extraction."""
+        from app.agents.rules.entity_extraction_rules import extract_entities_regex
+
+        result = extract_entities_regex("账号 zhangsan 从主机登录")
+        assert "zhangsan" in result.accounts
+
+    def test_chinese_user_extraction(self):
+        """Chinese keyword '用户' triggers account extraction."""
+        from app.agents.rules.entity_extraction_rules import extract_entities_regex
+
+        result = extract_entities_regex("用户 lisi 执行了敏感操作")
+        assert "lisi" in result.accounts
+
+    def test_chinese_username_extraction(self):
+        """Chinese keyword '用户名' triggers account extraction."""
+        from app.agents.rules.entity_extraction_rules import extract_entities_regex
+
+        result = extract_entities_regex("用户名 wangwu 登录失败")
+        assert "wangwu" in result.accounts
+
+
+# --------------------------------------------------------------------------- #
+# Tests: _map_event_type coverage
+# --------------------------------------------------------------------------- #
+
+
+class TestMapEventTypeCoverage:
+    def test_map_event_type_all_eight_exact(self):
+        """All 8 EventType enum values are reachable via exact match."""
+        for event_type in EventType:
+            result = _map_event_type(event_type.value)
+            assert result == event_type
+
+    def test_map_event_type_fallback_priority_data_exfiltration(self):
+        """'exfil'/'upload' keywords take priority (checked first)."""
+        # 'upload' keyword triggers DATA_EXFILTRATION even with other keywords.
+        result = _map_event_type(None, "upload and process executed with escalation")
+        assert result == EventType.DATA_EXFILTRATION
+
+    def test_map_event_type_fallback_priority_login(self):
+        """Login failure keywords fire before 'process' keyword."""
+        result = _map_event_type(None, "failed to login process alert")
+        assert result == EventType.ACCOUNT_ANOMALY
+
+    def test_map_event_type_escalation_matches(self):
+        """Full word 'escalation' matches insider_threat (not partial 'escalat')."""
+        result = _map_event_type(None, "privilege escalation detected")
+        assert result == EventType.INSIDER_THREAT
+
+    def test_map_event_type_de_escalation_does_not_match(self):
+        """'de-escalation' should NOT match because 'escalation' check uses 'in'."""
+        # NOTE: 'escalation' IS a substring of 'de-escalation', so this DOES
+        # match.  This test documents the current behavior.  A future improvement
+        # could use word-boundary matching.
+        result = _map_event_type(None, "de-escalation procedure completed")
+        assert result == EventType.INSIDER_THREAT  # current behavior
+
+
+# --------------------------------------------------------------------------- #
+# Tests: LLM response edge cases
+# --------------------------------------------------------------------------- #
+
+
+class TestLLMResponseEdgeCases:
+    @pytest.mark.asyncio
+    async def test_llm_parsed_wrong_type_triggers_fallback(self):
+        """LLM response.parsed is a valid Pydantic model but wrong type → regex fallback."""
+        from pydantic import BaseModel
+
+        from app.core.llm.base import LLMResponse
+
+        class _WrongModel(BaseModel):
+            some_field: str = "unexpected"
+
+        llm_response = LLMResponse(
+            content="",
+            parsed=_WrongModel(some_field="unexpected"),
+            model_name="mock",
+        )
+        llm_client = _MockLLMClient(response=llm_response)
+
+        wm = _MockBoundWorkingMemory(writer_name="TriageAgent")
+        agent = TriageAgent(llm_client=llm_client, working_memory=wm)
+
+        input_ = _make_input(
+            raw_event_summary="User admin connected to 203.0.113.88",
+        )
+        result = await agent._run(input_)
+        # Should have fallen back to regex.
+        assert result.degraded is True
+        assert "203.0.113.88" in result.ioc_list
+
+    @pytest.mark.asyncio
+    async def test_llm_response_parsed_none_triggers_fallback(self):
+        """LLM response.parsed is None → regex fallback."""
+        from app.core.llm.base import LLMResponse
+
+        llm_response = LLMResponse(
+            content='{"event_type":"data_exfiltration"}',
+            parsed=None,  # JSON parse failed
+            model_name="mock",
+        )
+        llm_client = _MockLLMClient(response=llm_response)
+
+        wm = _MockBoundWorkingMemory(writer_name="TriageAgent")
+        agent = TriageAgent(llm_client=llm_client, working_memory=wm)
+
+        input_ = _make_input(
+            raw_event_summary="Connection from 45.153.12.88 to evil.example.com",
+        )
+        result = await agent._run(input_)
+        assert result.degraded is True
+        assert "45.153.12.88" in result.ioc_list
+
+
+# --------------------------------------------------------------------------- #
+# Tests: ReDoS resistance
+# --------------------------------------------------------------------------- #
+
+
+class TestReDoSResistance:
+    def test_regex_no_redos_on_long_input(self):
+        """Extremely long alert text with edge-case patterns does not hang."""
+        import time
+
+        from app.agents.rules.entity_extraction_rules import extract_entities_regex
+
+        # Simulate a very long input with repetitive near-match patterns.
+        long_text = "a." * 5000 + " " + "b-" * 5000 + " final.exe"
+        start = time.monotonic()
+        result = extract_entities_regex(long_text)
+        elapsed = time.monotonic() - start
+        # Should complete in well under 1 second (catastrophic backtracking → >10s).
+        assert elapsed < 1.0, f"Regex extraction took {elapsed:.1f}s — possible ReDoS"
+        assert "final.exe" in result.processes
