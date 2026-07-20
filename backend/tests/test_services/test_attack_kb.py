@@ -16,7 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings
 from app.core.embedding.service import EmbeddingService
-from app.services.attack_kb_service import AttackKBService, KB_NAME
+from app.services.attack_kb_service import KB_NAME, AttackKBService
 from app.services.knowledge_store import KnowledgeStore
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]

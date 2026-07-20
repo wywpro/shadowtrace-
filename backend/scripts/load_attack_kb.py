@@ -14,7 +14,7 @@ import os
 import sys
 from pathlib import Path
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # Ensure the backend package root is on sys.path for ``from app.…`` imports.
 _BACKEND = Path(__file__).resolve().parents[1]
