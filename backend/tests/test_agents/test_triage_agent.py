@@ -558,6 +558,43 @@ class TestTriageAgentLLM:
         result = await agent._run(input_)
         assert result.event_type == EventType.OTHER  # no keywords matched
 
+    @pytest.mark.asyncio
+    async def test_empty_alert_with_llm_client_returns_empty_entities(self):
+        """Empty alert + LLM client present → empty EntitySet, no crash.
+
+        When ``llm_client`` is configured (not None) but the alert text is
+        empty, ``build_triage_messages("")`` would raise ``ValueError`` which
+        is not a ``ShadowTraceError``.  The agent must short-circuit before
+        the LLM call and return an empty ``EntitySet`` with ``degraded=False``
+        (LLM did not fail — there is just nothing to extract).
+        """
+        from app.agents.prompts.triage_prompt import TriageLLMResponse
+        from app.core.llm.base import LLMResponse
+
+        llm_response = LLMResponse(
+            content="",
+            parsed=TriageLLMResponse(
+                event_type=EventType.OTHER,
+                entities=EntitySet(),
+                reasoning="",
+            ),
+            model_name="mock",
+        )
+        llm_client = _MockLLMClient(response=llm_response)
+
+        wm = _MockBoundWorkingMemory(writer_name="TriageAgent")
+        agent = TriageAgent(llm_client=llm_client, working_memory=wm)
+
+        input_ = _make_input(raw_event_summary="")
+        result = await agent._run(input_)
+
+        # Must not crash; should return empty EntitySet, degraded=False.
+        assert isinstance(result, TriageResult)
+        assert result.entities == EntitySet()
+        assert result.degraded is False
+        # LLM should NOT have been called (empty input short-circuit).
+        assert len(llm_client.chat_calls) == 0
+
 
 # --------------------------------------------------------------------------- #
 # Tests: TriageAgent — degraded scenarios

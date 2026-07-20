@@ -473,6 +473,13 @@ class TriageAgent(BaseAgent[TriageAgentInput, TriageResult]):
             entities = await self._regex_fallback(alert_text)
             return entities, True, ""
 
+        # Empty alert text → nothing to extract; skip LLM call.
+        # ``build_triage_messages`` raises ``ValueError`` on empty input which
+        # is not a ``ShadowTraceError`` and would escape the try/except below,
+        # causing the agent to fail instead of degrading gracefully.
+        if not alert_text.strip():
+            return EntitySet(), False, ""
+
         try:
             messages = build_triage_messages(alert_text)
             response: LLMResponse = await self.llm_client.chat(
@@ -664,7 +671,13 @@ class TriageAgent(BaseAgent[TriageAgentInput, TriageResult]):
                     "timestamp": datetime.now(UTC).isoformat(),
                 },
             )
-        except Exception:
+        except ShadowTraceError:
+            # All expected working-memory failures (connection errors,
+            # GuardrailViolationError, DependencyUnavailableError, etc.)
+            # are ShadowTraceError subclasses.  Programming errors
+            # (AttributeError, TypeError, …) are intentionally allowed to
+            # propagate so they surface in tests / monitoring rather than
+            # being silently masked by an overly broad ``except Exception``.
             logger.exception(
                 "Failed to persist triage_degraded flag for event=%s",
                 event_id,
