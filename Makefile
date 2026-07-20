@@ -24,7 +24,7 @@ CI_BUILD_PROJECT_PREFIX ?= $(COMPOSE_PROJECT_NAME)-ci-build
 CI_DATABASE_URL ?= postgresql+asyncpg://shadowtrace:shadowtrace@localhost:$(POSTGRES_PORT)/shadowtrace
 CI_REDIS_URL ?= redis://localhost:$(REDIS_PORT)/0
 
-.PHONY: up down test lint fmt migrate migrate-down integration-test test-tools ci-lint ci-test ci-build
+.PHONY: up down test lint fmt migrate migrate-down integration-test test-tools ci-lint ci-test ci-build load-kb
 
 up:
 	$(COMPOSE) up -d --build
@@ -172,3 +172,7 @@ ci-build:
 		"http://127.0.0.1:$(BACKEND_PORT)/api/v1/health" >/dev/null; \
 	curl --fail --show-error --silent \
 		"http://127.0.0.1:$(FRONTEND_PORT)/health" >/dev/null
+
+# --- ISSUE-043 knowledge base loading ---------------------------------- #
+load-kb:
+	cd backend && $(PYTHON) scripts/load_case_kb.py

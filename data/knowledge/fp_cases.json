@@ -1,0 +1,110 @@
+[
+  {
+    "case_id": "case-00000001",
+    "pattern_summary": "运维账号在变更窗口内批量登录跳板机执行自动化改密脚本",
+    "alert_signature": "Bulk login by ops account during change window from jump host",
+    "entity_pattern": "account=ops-change-bot type=service_account; host=PC-OPS-JUMP-01 role=jump_host; behavior=bulk_login_in_window",
+    "fp_reason": "运维团队在已审批变更窗口内执行的合规批量改密操作，登录模式与变更工单时间窗口完全吻合",
+    "confirmed_by": "security_admin",
+    "confirmed_at": "2024-03-15T10:30:00Z"
+  },
+  {
+    "case_id": "case-00000002",
+    "pattern_summary": "夜间备份任务产生大流量网络传输触发数据外泄告警",
+    "alert_signature": "Large outbound data transfer during off-hours from backup server",
+    "entity_pattern": "account=backup-svc type=service_account; host=BACKUP-SRV-03 role=backup_server; dst_port=873; traffic_volume=high; time=night",
+    "fp_reason": "每日定时异地备份任务，传输目标为可信灾备中心，流量特征与备份配置一致",
+    "confirmed_by": "infra_engineer",
+    "confirmed_at": "2024-04-02T08:15:00Z"
+  },
+  {
+    "case_id": "case-00000003",
+    "pattern_summary": "内部漏洞扫描器发起全网端口扫描被误判为横向移动",
+    "alert_signature": "Sequential port scan across internal subnets from designated scanner host",
+    "entity_pattern": "account=scanner-svc type=service_account; host=SCANNER-01 role=vuln_scanner; behavior=sequential_port_scan; dst_ports=common",
+    "fp_reason": "Tenable/Nessus 定期漏洞扫描任务，源 IP 在 CMDB 中标注为授权扫描器",
+    "confirmed_by": "vuln_mgmt_lead",
+    "confirmed_at": "2024-05-11T14:00:00Z"
+  },
+  {
+    "case_id": "case-00000004",
+    "pattern_summary": "自动化部署工具批量 SSH 登录多台服务器触发暴力破解告警",
+    "alert_signature": "Multiple SSH login attempts to production servers in short window from CI/CD runner",
+    "entity_pattern": "account=deploy-bot type=service_account; host=CI-RUNNER-07 role=ci_runner; protocol=ssh; target_count=high; time_window=short",
+    "fp_reason": "Ansible Tower 在自动化部署窗口内通过 SSH 批量推送配置，使用密钥认证且均在 CMDB 资产清单内",
+    "confirmed_by": "devops_lead",
+    "confirmed_at": "2024-06-20T11:45:00Z"
+  },
+  {
+    "case_id": "case-00000005",
+    "pattern_summary": "域控制器之间正常 AD 复制流量被误判为可疑域控通信",
+    "alert_signature": "Unusual LDAP replication traffic between domain controllers across WAN links",
+    "entity_pattern": "host=DC-PRIMARY-01,DC-SECONDARY-04 type=domain_controller; protocol=ldap; ports=389,636; behavior=ad_replication",
+    "fp_reason": "AD 多站点复制拓扑的标准同步流量，频率与站点链接复制间隔配置一致",
+    "confirmed_by": "ad_admin",
+    "confirmed_at": "2024-07-03T16:00:00Z"
+  },
+  {
+    "case_id": "case-00000006",
+    "pattern_summary": "DHCP 服务器大规模 IP 续租导致网络异常告警",
+    "alert_signature": "Surge in ARP traffic and IP lease renewal across office VLAN at lease expiry boundary",
+    "entity_pattern": "host=DHCP-CLUSTER-01 type=dhcp_server; protocol=dhcp,arp; behavior=lease_renewal_surge; time=lease_half_life",
+    "fp_reason": "租约达半生命周期时的正常续租波峰，ARP 表刷新导致的瞬时广播增加",
+    "confirmed_by": "network_engineer",
+    "confirmed_at": "2024-01-28T09:00:00Z"
+  },
+  {
+    "case_id": "case-00000007",
+    "pattern_summary": "安全监测工具自身代理流量被误判为 C2 通信",
+    "alert_signature": "Encrypted outbound connections with beaconing pattern from security sensor hosts",
+    "entity_pattern": "account=edr-agent type=service_account; host=ENDPOINT-* role=workstation; dst_ip=edr-cloud-sink; protocol=https; behavior=regular_heartbeat",
+    "fp_reason": "EDR Agent 与云端控制台的心跳与遥测上报，TLS 加密且目标为已注册的安全产品 SaaS 端点",
+    "confirmed_by": "soc_analyst",
+    "confirmed_at": "2024-02-14T13:20:00Z"
+  },
+  {
+    "case_id": "case-00000008",
+    "pattern_summary": "VPN 网关集中时段大量员工拨入触发异常地理位置登录告警",
+    "alert_signature": "Multiple concurrent VPN logins from geographically distributed IPs within morning rush hour",
+    "entity_pattern": "account=* type=employee; src_ips=diverse_geo; protocol=vpn; time=morning_rush; behavior=concurrent_login_spike",
+    "fp_reason": "周一早高峰远程办公集中拨入，IP 分布广因员工使用不同运营商/家庭宽带，二次认证均通过",
+    "confirmed_by": "it_support",
+    "confirmed_at": "2024-08-05T08:30:00Z"
+  },
+  {
+    "case_id": "case-00000009",
+    "pattern_summary": "邮件安全网关拦截群发钓鱼邮件测试导致 SOC 工单风暴",
+    "alert_signature": "Mass phishing campaign alert from email security gateway targeting internal users",
+    "entity_pattern": "account=* type=email_recipient; src_smtp=sandbox-phish-sim; subject=Security Awareness; behavior=simulated_phish",
+    "fp_reason": "安全团队授权的季度钓鱼演练，发件域在安全网关白名单中但演练标记未同步至 SOC 平台",
+    "confirmed_by": "security_awareness_lead",
+    "confirmed_at": "2024-04-01T10:00:00Z"
+  },
+  {
+    "case_id": "case-0000000a",
+    "pattern_summary": "开发环境大规模 npm/pip 包安装触发恶意软件下载告警",
+    "alert_signature": "Bulk download of packages from public registries by developer workstations flagged as suspicious binary fetch",
+    "entity_pattern": "account=dev-* type=developer; host=DEV-WS-* role=workstation; dst=registry.npmjs.org,pypi.org; behavior=package_install_batch",
+    "fp_reason": "新员工入职日批量克隆项目仓库并安装依赖，npm/pip 源为官方注册表且包哈希可验证",
+    "confirmed_by": "eng_manager",
+    "confirmed_at": "2024-05-20T15:00:00Z"
+  },
+  {
+    "case_id": "case-0000000b",
+    "pattern_summary": "财务系统月底批量导出报表触发 DLP 大量文件读取告警",
+    "alert_signature": "Large volume of file reads and exports from finance shared drive at month-end close",
+    "entity_pattern": "account=finance-* type=employee; host=FIN-APP-02 role=application_server; file_pattern=*.xlsx,*.csv; behavior=bulk_export; time=month_end",
+    "fp_reason": "财务月结常规流程，每月最后三个工作日固定执行，操作账号均已完成 PAM 签出",
+    "confirmed_by": "finance_director",
+    "confirmed_at": "2024-06-28T17:00:00Z"
+  },
+  {
+    "case_id": "case-0000000c",
+    "pattern_summary": "容器集群自动弹性伸缩触发进程异常创建告警",
+    "alert_signature": "Rapid process creation bursts on Kubernetes nodes during horizontal pod autoscaling event",
+    "entity_pattern": "host=K8S-NODE-* role=kubernetes_node; container_name=*; image_registry=internal; behavior=hpa_scale_out; process_count=high",
+    "fp_reason": "业务峰值 HPA 触发从 5→20 副本扩容，每个 Pod 启动时的 init container 与 sidecar 注入导致的瞬时进程创建",
+    "confirmed_by": "platform_engineer",
+    "confirmed_at": "2024-07-15T12:30:00Z"
+  }
+]
