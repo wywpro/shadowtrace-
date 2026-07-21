@@ -40,15 +40,12 @@ async def planner_node(
         The generated ``ExecutionPlan`` (already persisted to
         ``EventContext.execution_plan`` via working memory).
     """
-    event_id = (
-        event_context.event.event_id
-        if event_context.event
-        else "unknown"
-    )
+    event_id = event_context.event.event_id if event_context.event else "unknown"
 
     if disposition_only:
         logger.info(
-            "planner_node: generating disposition-only plan for event=%s", event_id,
+            "planner_node: generating disposition-only plan for event=%s",
+            event_id,
         )
         return await planner.plan_disposition_only(event_context)
 
@@ -75,9 +72,7 @@ async def planner_node(
     if triage_corrupt:
         triage_result = TriageResult(
             event_type=EventType.OTHER,
-            severity=event_context.event.severity
-            if event_context.event
-            else Severity.MEDIUM,
+            severity=event_context.event.severity if event_context.event else Severity.MEDIUM,
             need_investigation=True,
             reasoning="triage data corrupt — using conservative rule-based plan",
             degraded=True,
@@ -100,9 +95,7 @@ async def planner_node(
                 )
                 return await planner.revise(
                     event_context,
-                    failure_reason=(
-                        f"replan triggered (count={event_context.replan_count})"
-                    ),
+                    failure_reason=(f"replan triggered (count={event_context.replan_count})"),
                     previous_plan=previous_plan,
                 )
             except Exception:

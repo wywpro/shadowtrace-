@@ -27,7 +27,18 @@ def _make_triage(event_type: EventType = EventType.DATA_EXFILTRATION) -> TriageR
 
 
 def _make_event_summary(event_id: str) -> EventSummary:
-    from app.models.enums import DispositionPolicy, EventStatus as ES, FinalVerdict as FV, WritebackReadiness as WR
+    from app.models.enums import (
+        DispositionPolicy,
+    )
+    from app.models.enums import (
+        EventStatus as ES,
+    )
+    from app.models.enums import (
+        FinalVerdict as FV,
+    )
+    from app.models.enums import (
+        WritebackReadiness as WR,
+    )
 
     return EventSummary(
         event_id=event_id,
@@ -73,31 +84,43 @@ async def test_planner_node_normal_path(tmp_path: Path) -> None:
             "event_id": "evt-node-01",
             "steps": [
                 {
-                    "step_order": 1, "step_goal": "Evidence",
+                    "step_order": 1,
+                    "step_goal": "Evidence",
                     "assigned_agent": "evidence_agent",
-                    "required_tools": ["query_threat_intel"], "success_criteria": "ok",
+                    "required_tools": ["query_threat_intel"],
+                    "success_criteria": "ok",
                 },
                 {
-                    "step_order": 2, "step_goal": "Risk",
+                    "step_order": 2,
+                    "step_goal": "Risk",
                     "assigned_agent": "risk_agent",
-                    "required_tools": [], "success_criteria": "ok",
+                    "required_tools": [],
+                    "success_criteria": "ok",
                 },
                 {
-                    "step_order": 3, "step_goal": "Response",
+                    "step_order": 3,
+                    "step_goal": "Response",
                     "assigned_agent": "response_agent",
-                    "required_tools": [], "success_criteria": "ok",
+                    "required_tools": [],
+                    "success_criteria": "ok",
                 },
                 {
-                    "step_order": 4, "step_goal": "Report",
+                    "step_order": 4,
+                    "step_goal": "Report",
                     "assigned_agent": "report_agent",
-                    "required_tools": [], "success_criteria": "ok",
+                    "required_tools": [],
+                    "success_criteria": "ok",
                 },
             ],
             "budget": {"max_tool_calls": 30, "max_llm_calls": 20, "max_duration_s": 300},
-            "revision": 0, "revise_reason": None, "degraded": False,
+            "revision": 0,
+            "revise_reason": None,
+            "degraded": False,
         },
         "model_name": "mock-model",
-        "prompt_tokens": 50, "completion_tokens": 100, "total_tokens": 150,
+        "prompt_tokens": 50,
+        "completion_tokens": 100,
+        "total_tokens": 150,
     }
     (golden_dir / "default.json").write_text(json.dumps(golden), encoding="utf-8")
 
@@ -164,25 +187,32 @@ async def test_planner_node_replan_triggers_revise(tmp_path: Path) -> None:
             "event_id": "evt-replan-node",
             "steps": [
                 {
-                    "step_order": 1, "step_goal": "[revised] New approach",
+                    "step_order": 1,
+                    "step_goal": "[revised] New approach",
                     "assigned_agent": "evidence_agent",
                     "required_tools": ["query_threat_intel", "query_dns"],
                     "success_criteria": "better data",
                 },
                 {
-                    "step_order": 2, "step_goal": "Risk",
+                    "step_order": 2,
+                    "step_goal": "Risk",
                     "assigned_agent": "risk_agent",
-                    "required_tools": [], "success_criteria": "ok",
+                    "required_tools": [],
+                    "success_criteria": "ok",
                 },
                 {
-                    "step_order": 3, "step_goal": "Response",
+                    "step_order": 3,
+                    "step_goal": "Response",
                     "assigned_agent": "response_agent",
-                    "required_tools": [], "success_criteria": "ok",
+                    "required_tools": [],
+                    "success_criteria": "ok",
                 },
                 {
-                    "step_order": 4, "step_goal": "Report",
+                    "step_order": 4,
+                    "step_goal": "Report",
                     "assigned_agent": "report_agent",
-                    "required_tools": [], "success_criteria": "ok",
+                    "required_tools": [],
+                    "success_criteria": "ok",
                 },
             ],
             "budget": {"max_tool_calls": 30, "max_llm_calls": 20, "max_duration_s": 300},
@@ -191,7 +221,9 @@ async def test_planner_node_replan_triggers_revise(tmp_path: Path) -> None:
             "degraded": False,
         },
         "model_name": "mock-model",
-        "prompt_tokens": 60, "completion_tokens": 120, "total_tokens": 180,
+        "prompt_tokens": 60,
+        "completion_tokens": 120,
+        "total_tokens": 180,
     }
     (golden_dir / "default.json").write_text(json.dumps(golden), encoding="utf-8")
 
@@ -203,9 +235,11 @@ async def test_planner_node_replan_triggers_revise(tmp_path: Path) -> None:
         event_id="evt-replan-node",
         steps=[
             PlanStep(
-                step_order=1, step_goal="Original step",
+                step_order=1,
+                step_goal="Original step",
                 assigned_agent="evidence_agent",
-                required_tools=["query_threat_intel"], success_criteria="ok",
+                required_tools=["query_threat_intel"],
+                success_criteria="ok",
             ),
         ],
         budget=PlanBudget(),
@@ -250,7 +284,4 @@ async def test_planner_node_corrupt_triage_uses_default_plan(tmp_path: Path) -> 
     assert len(plan.steps) >= 4
     assert plan.degraded is True
     # Must not be a single-step disposition-only plan
-    assert not (
-        len(plan.steps) == 1
-        and plan.steps[0].assigned_agent == "response_agent"
-    )
+    assert not (len(plan.steps) == 1 and plan.steps[0].assigned_agent == "response_agent")

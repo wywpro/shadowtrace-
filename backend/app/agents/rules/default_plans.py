@@ -95,6 +95,7 @@ def _build_standard_plan(
 # Per-EventType default plans
 # --------------------------------------------------------------------------- #
 
+
 def _plan_data_exfiltration(event_id: str, plan_id: str) -> ExecutionPlan:
     """数据外泄：七路查询覆盖IOC、终端、网络、身份、数据安全"""
     return _build_standard_plan(

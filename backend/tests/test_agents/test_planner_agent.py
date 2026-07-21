@@ -16,9 +16,8 @@ from app.agents.planner_agent import (
 )
 from app.core.llm.base import InMemoryLLMCallAuditRecorder
 from app.core.llm.mock_client import MockLLMClient
-from app.models.agent_io import ExecutionPlan, PlanBudget, PlanStep, PlannerAgentInput, TriageResult
+from app.models.agent_io import ExecutionPlan, PlanBudget, PlannerAgentInput, PlanStep, TriageResult
 from app.models.enums import EventType, Severity
-
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -114,9 +113,9 @@ def test_disposition_only_plan_id_stable() -> None:
 @pytest.mark.asyncio
 async def test_plan_disposition_only_single_step() -> None:
     agent = PlannerAgent()
-    plan = await agent.plan_disposition_only(
-        MagicMock(event_id="evt-disp-01")
-    )
+    ctx = MagicMock()
+    ctx.event.event_id = "evt-disp-01"
+    plan = await agent.plan_disposition_only(ctx)
     assert plan.revision == 0
     assert plan.degraded is False
     assert len(plan.steps) == 1
@@ -129,7 +128,8 @@ async def test_plan_disposition_only_single_step() -> None:
 @pytest.mark.asyncio
 async def test_plan_disposition_only_stable() -> None:
     agent = PlannerAgent()
-    ctx = MagicMock(event_id="evt-disp-stable")
+    ctx = MagicMock()
+    ctx.event.event_id = "evt-disp-stable"
     plan1 = await agent.plan_disposition_only(ctx)
     plan2 = await agent.plan_disposition_only(ctx)
     assert plan1.plan_id == plan2.plan_id
@@ -227,9 +227,17 @@ async def test_plan_with_mock_llm(tmp_path: Path) -> None:
     assert len(plan.steps) >= 4
     for step in plan.steps:
         assert step.assigned_agent in {
-            "evidence_agent", "risk_agent", "response_agent",
-            "graph_agent", "rag_agent", "verify_agent", "report_agent",
-            "triage_agent", "planner_agent", "memory_agent", "tool_agent",
+            "evidence_agent",
+            "risk_agent",
+            "response_agent",
+            "graph_agent",
+            "rag_agent",
+            "verify_agent",
+            "report_agent",
+            "triage_agent",
+            "planner_agent",
+            "memory_agent",
+            "tool_agent",
             "super_agent",
         }
     assert plan.revision == 0
@@ -386,7 +394,7 @@ def test_validate_plan_strips_invalid_tools() -> None:
 
 def test_all_event_types_have_default_plans() -> None:
     """Every EventType must have a corresponding DEFAULT_PLANS entry."""
-    from app.agents.rules.default_plans import DEFAULT_PLANS, get_default_plan
+    from app.agents.rules.default_plans import get_default_plan
 
     for ev_type in EventType:
         plan = get_default_plan("evt-test-alltypes", ev_type, f"pln-{ev_type.value[:8]}")
@@ -396,8 +404,11 @@ def test_all_event_types_have_default_plans() -> None:
         # Every step must be valid
         for step in plan.steps:
             assert step.assigned_agent in {
-                "evidence_agent", "risk_agent", "response_agent",
-                "graph_agent", "rag_agent",
+                "evidence_agent",
+                "risk_agent",
+                "response_agent",
+                "graph_agent",
+                "rag_agent",
             }
             assert step.step_order >= 1
 
@@ -557,7 +568,8 @@ async def test_plan_idempotent_via_working_memory(tmp_path: Path) -> None:
         event_id="evt-idempotent",
         steps=[
             PlanStep(
-                step_order=1, step_goal="cached step",
+                step_order=1,
+                step_goal="cached step",
                 assigned_agent="evidence_agent",
                 required_tools=["query_threat_intel"],
                 success_criteria="ok",
@@ -596,7 +608,8 @@ async def test_plan_public_api_without_triage() -> None:
     wm.read = AsyncMock(return_value=None)
 
     agent = PlannerAgent(working_memory=wm)
-    ctx = MagicMock(event_id="evt-plan-no-triage")
+    ctx = MagicMock()
+    ctx.event.event_id = "evt-plan-no-triage"
 
     plan = await agent.plan(ctx)
     # Must not crash with AttributeError; should return a valid plan
@@ -624,32 +637,43 @@ async def test_persist_failure_marks_degraded(tmp_path: Path) -> None:
                 "event_id": "evt-persist-fail",
                 "steps": [
                     {
-                        "step_order": 1, "step_goal": "Evidence",
+                        "step_order": 1,
+                        "step_goal": "Evidence",
                         "assigned_agent": "evidence_agent",
                         "required_tools": ["query_threat_intel"],
                         "success_criteria": "ok",
                     },
                     {
-                        "step_order": 2, "step_goal": "Risk",
+                        "step_order": 2,
+                        "step_goal": "Risk",
                         "assigned_agent": "risk_agent",
-                        "required_tools": [], "success_criteria": "ok",
+                        "required_tools": [],
+                        "success_criteria": "ok",
                     },
                     {
-                        "step_order": 3, "step_goal": "Response",
+                        "step_order": 3,
+                        "step_goal": "Response",
                         "assigned_agent": "response_agent",
-                        "required_tools": [], "success_criteria": "ok",
+                        "required_tools": [],
+                        "success_criteria": "ok",
                     },
                     {
-                        "step_order": 4, "step_goal": "Report",
+                        "step_order": 4,
+                        "step_goal": "Report",
                         "assigned_agent": "report_agent",
-                        "required_tools": [], "success_criteria": "ok",
+                        "required_tools": [],
+                        "success_criteria": "ok",
                     },
                 ],
                 "budget": {"max_tool_calls": 30, "max_llm_calls": 20, "max_duration_s": 300},
-                "revision": 0, "revise_reason": None, "degraded": False,
+                "revision": 0,
+                "revise_reason": None,
+                "degraded": False,
             },
             "model_name": "mock-model",
-            "prompt_tokens": 50, "completion_tokens": 100, "total_tokens": 150,
+            "prompt_tokens": 50,
+            "completion_tokens": 100,
+            "total_tokens": 150,
         },
     )
 
@@ -683,20 +707,25 @@ def test_validate_execution_plan_drops_invalid_agent_steps() -> None:
 
     # Use model_construct to bypass Pydantic Literal validation
     valid_step = PlanStep(
-        step_order=1, step_goal="Valid step",
+        step_order=1,
+        step_goal="Valid step",
         assigned_agent="evidence_agent",
         required_tools=["query_threat_intel"],
         success_criteria="ok",
     )
     invalid_step = PlanStep.model_construct(
-        step_order=2, step_goal="Invalid agent step",
+        step_order=2,
+        step_goal="Invalid agent step",
         assigned_agent="invalid_agent_xxx",  # type: ignore[arg-type]
-        required_tools=[], success_criteria="n/a",
+        required_tools=[],
+        success_criteria="n/a",
     )
     another_valid = PlanStep(
-        step_order=3, step_goal="Another valid step",
+        step_order=3,
+        step_goal="Another valid step",
         assigned_agent="risk_agent",
-        required_tools=[], success_criteria="ok",
+        required_tools=[],
+        success_criteria="ok",
     )
 
     plan = ExecutionPlan(

@@ -38,14 +38,13 @@ from app.models.agent_io import (
     PlanStep,
     TriageResult,
 )
+from app.models.context import EventContext
 from app.models.enums import EventType
 
 logger = logging.getLogger(__name__)
 
 # Valid agent names for assigned_agent validation
-_VALID_AGENT_NAMES: frozenset[str] = frozenset(
-    _AGENT_INPUT_BY_NAME.keys()
-)
+_VALID_AGENT_NAMES: frozenset[str] = frozenset(_AGENT_INPUT_BY_NAME.keys())
 
 # Valid tool names per agent (canonical list from ISSUE-049 / planner_prompt).
 # Agents NOT listed here (risk_agent, response_agent, graph_agent, etc.) have
@@ -54,25 +53,29 @@ _VALID_AGENT_NAMES: frozenset[str] = frozenset(
 # disposition-only deferred Action owned by ``EventDispositionService``, never
 # routed through ToolProvider; it is intentionally absent from this registry.
 _VALID_TOOLS: dict[str, frozenset[str]] = {
-    "evidence_agent": frozenset({
-        "query_threat_intel",
-        "query_dns",
-        "query_whois",
-        "query_passive_dns",
-        "query_process_tree",
-        "query_network_connections",
-        "query_file_events",
-        "query_login_history",
-        "query_account_activity",
-        "query_data_access_logs",
-        "query_dlp_events",
-        "query_lateral_movement",
-        "query_privilege_changes",
-    }),
-    "rag_agent": frozenset({
-        "search_kb",
-        "match_techniques",
-    }),
+    "evidence_agent": frozenset(
+        {
+            "query_threat_intel",
+            "query_dns",
+            "query_whois",
+            "query_passive_dns",
+            "query_process_tree",
+            "query_network_connections",
+            "query_file_events",
+            "query_login_history",
+            "query_account_activity",
+            "query_data_access_logs",
+            "query_dlp_events",
+            "query_lateral_movement",
+            "query_privilege_changes",
+        }
+    ),
+    "rag_agent": frozenset(
+        {
+            "search_kb",
+            "match_techniques",
+        }
+    ),
 }
 
 
@@ -187,17 +190,13 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
     # Public API (called by orchestration, not BaseAgent.execute)
     # ------------------------------------------------------------------ #
 
-    async def plan(self, event_context) -> ExecutionPlan:
+    async def plan(self, event_context: EventContext) -> ExecutionPlan:
         """Generate an investigation plan via LLM (or rule fallback).
 
         When ``triage_result`` is unavailable in working memory this falls
         back to a disposition-only plan instead of crashing (see Blocker fix).
         """
-        ec_event_id = (
-            event_context.event_id
-            if hasattr(event_context, "event_id")
-            else "unknown"
-        )
+        ec_event_id = event_context.event.event_id if event_context.event else "unknown"
         triage = await self._read_triage_result(event_context)
         if triage is None:
             logger.warning(
@@ -210,29 +209,21 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
             return plan
         return await self._plan_impl(ec_event_id, triage)
 
-    async def plan_disposition_only(self, event_context) -> ExecutionPlan:
+    async def plan_disposition_only(self, event_context: EventContext) -> ExecutionPlan:
         """Generate a deterministic single-step plan for disposition-only."""
-        event_id = (
-            event_context.event_id
-            if hasattr(event_context, "event_id")
-            else "unknown"
-        )
+        event_id = event_context.event.event_id if event_context.event else "unknown"
         plan = _build_disposition_only_plan(event_id)
         await self._persist_plan(event_id, plan)
         return plan
 
     async def revise(
         self,
-        event_context,
+        event_context: EventContext,
         failure_reason: str,
         previous_plan: ExecutionPlan,
     ) -> ExecutionPlan:
         """Revise an existing plan based on a failure reason."""
-        event_id = (
-            event_context.event_id
-            if hasattr(event_context, "event_id")
-            else "unknown"
-        )
+        event_id = event_context.event.event_id if event_context.event else "unknown"
         return await self._revise_impl(event_id, failure_reason, previous_plan)
 
     # ------------------------------------------------------------------ #
@@ -306,9 +297,7 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
                 )
 
         # Rule fallback
-        plan = get_default_plan(
-            event_id, triage_result.event_type, _generate_plan_id(event_id, 0)
-        )
+        plan = get_default_plan(event_id, triage_result.event_type, _generate_plan_id(event_id, 0))
         logger.info(
             "PlannerAgent: using DEFAULT_PLANS for event=%s type=%s",
             event_id,
@@ -341,7 +330,9 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
         if self.llm_client is not None:
             try:
                 plan = await self._llm_revise(
-                    event_id, failure_reason, previous_plan,
+                    event_id,
+                    failure_reason,
+                    previous_plan,
                 )
                 if self.working_memory is not None:
                     persisted = await self._persist_plan(event_id, plan)
@@ -368,7 +359,9 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
         triage = await self._read_triage_from_memory(event_id)
         event_type = triage.event_type if triage else EventType.OTHER
         plan = get_default_plan(
-            event_id, event_type, _generate_plan_id(event_id, new_revision),
+            event_id,
+            event_type,
+            _generate_plan_id(event_id, new_revision),
         )
         plan = ExecutionPlan(
             plan_id=plan.plan_id,
@@ -393,7 +386,10 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
     ) -> ExecutionPlan:
         """Call LLM in JSON mode to generate an ExecutionPlan."""
         msgs_raw = build_plan_generate_messages(event_id, triage_result)
-        messages = [LLMMessage(**m) for m in msgs_raw]
+        messages = [
+            LLMMessage(role=m["role"], content=m["content"])  # type: ignore[arg-type]
+            for m in msgs_raw
+        ]
 
         response = await self.llm_client.chat(  # type: ignore[union-attr]
             messages,
@@ -412,9 +408,7 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
         # Enforce plan_id format and event_id
         plan = ExecutionPlan(
             plan_id=(
-                plan.plan_id
-                if plan.plan_id.startswith("pln-")
-                else _generate_plan_id(event_id, 0)
+                plan.plan_id if plan.plan_id.startswith("pln-") else _generate_plan_id(event_id, 0)
             ),
             event_id=event_id,
             steps=plan.steps,
@@ -441,7 +435,10 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
         (Should-Fix #4).
         """
         msgs_raw = build_plan_revise_messages(event_id, failure_reason, previous_plan)
-        messages = [LLMMessage(**m) for m in msgs_raw]
+        messages = [
+            LLMMessage(role=m["role"], content=m["content"])  # type: ignore[arg-type]
+            for m in msgs_raw
+        ]
 
         response = await self.llm_client.chat(  # type: ignore[union-attr]
             messages,
@@ -475,13 +472,13 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
     # Working memory helpers
     # ------------------------------------------------------------------ #
 
-    async def _read_triage_result(self, event_context) -> TriageResult | None:
+    async def _read_triage_result(self, event_context: EventContext) -> TriageResult | None:
         """Read triage_result from working memory if available."""
         if self.working_memory is None:
             return None
         try:
             data = await self.working_memory.read(
-                event_context.event_id if hasattr(event_context, "event_id") else "",
+                event_context.event.event_id if event_context.event else "",
                 "triage_result",
             )
             if data is not None:
