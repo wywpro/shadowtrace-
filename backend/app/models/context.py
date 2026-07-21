@@ -79,3 +79,4 @@ class EventContext(BaseModel):
     quality_scores: list[dict[str, Any]] = Field(default_factory=list)
     scratchpad: list[dict[str, Any]] = Field(default_factory=list)
     degraded_flags: list[str] = Field(default_factory=list)
+    triage_degraded: dict[str, Any] | None = None

@@ -23,6 +23,11 @@ from app.services.knowledge_store import KnowledgeStore
 FP_KB_NAME = "fp_case_kb"
 HISTORY_KB_NAME = "history_case_kb"
 
+# Mock-stage keyword expansions until remote embeddings land (GitHub issue #522).
+_FP_KEYWORD_ALIASES: dict[str, str] = {
+    "ops-change-bot": ("ops-change-bot PC-OPS-JUMP-01 bulk login change window password rotation"),
+}
+
 
 class CaseKBService:
     """Search false-positive and historical cases; archive closed events as cases.
@@ -44,9 +49,14 @@ class CaseKBService:
     # ------------------------------------------------------------------
 
     async def search_fp_cases(self, alert_text: str, top_k: int = 5) -> list[RetrievedChunk]:
-        """Vector-search ``fp_case_kb`` for false-positive patterns matching *alert_text*."""
-        query_vec = await self._kb._embed.embed_query(alert_text)
-        return await self._kb.vector_search(FP_KB_NAME, query_vec, top_k=top_k)
+        """Hybrid-search ``fp_case_kb`` for false-positive patterns matching *alert_text*."""
+        keyword_query = _fp_keyword_query(alert_text)
+        return await self._kb.hybrid_search(
+            FP_KB_NAME,
+            alert_text,
+            keyword_query=keyword_query,
+            top_k=top_k,
+        )
 
     async def search_history_cases(
         self,
@@ -54,11 +64,9 @@ class CaseKBService:
         event_type: str | None = None,
         top_k: int = 5,
     ) -> list[RetrievedChunk]:
-        """Vector-search ``history_case_kb``, optionally filtered by *event_type* in metadata."""
-        query_vec = await self._kb._embed.embed_query(query_text)
-        results = await self._kb.vector_search(
-            HISTORY_KB_NAME, query_vec, top_k=top_k if event_type is None else top_k * 3
-        )
+        """Hybrid-search ``history_case_kb``, optionally filtered by *event_type* in metadata."""
+        fetch_k = top_k if event_type is None else top_k * 3
+        results = await self._kb.hybrid_search(HISTORY_KB_NAME, query_text, top_k=fetch_k)
         if event_type is not None:
             results = [r for r in results if r.metadata.get("event_type") == event_type]
             results = results[:top_k]
@@ -99,21 +107,22 @@ class CaseKBService:
             for field in ("accounts", "hosts", "ips", "domains", "processes", "files"):
                 values = entities_raw.get(field, [])
                 if values:
-                    entity_parts.append(f"{field}={','.join(str(v) for v in values)}")
+                    rendered = ",".join(_format_entity_item(v) for v in values)
+                    entity_parts.append(f"{field}={rendered}")
             key_entities = "; ".join(entity_parts) if entity_parts else "none"
 
-        history_case = HistoryCase(
-            case_id=case_id,
-            event_id=event_id,
-            event_type=event_type,
-            case_label=case_label,
-            summary=summary,
-            key_entities=key_entities,
-            final_verdict=verdict.value,
-            risk_score=int(row.risk_score or 0),
-            resolution=resolution,
-            closed_at=row.closed_at or datetime.now(UTC),
-        )
+            history_case = HistoryCase(
+                case_id=case_id,
+                event_id=event_id,
+                event_type=event_type,
+                case_label=case_label,
+                summary=summary,
+                key_entities=key_entities,
+                final_verdict=verdict.value,
+                risk_score=int(row.risk_score or 0),
+                resolution=resolution,
+                closed_at=row.closed_at or datetime.now(UTC),
+            )
 
         content = history_case_to_text(history_case)
         chunk_id = make_chunk_id(HISTORY_KB_NAME, case_id)
@@ -127,6 +136,36 @@ class CaseKBService:
         )
         await self._kb.upsert_chunks(HISTORY_KB_NAME, [chunk])
         return case_id
+
+
+def _fp_keyword_query(alert_text: str) -> str:
+    """Expand distinctive FP markers for keyword search under mock embeddings."""
+    lowered = alert_text.lower()
+    for needle, expansion in _FP_KEYWORD_ALIASES.items():
+        if needle in lowered:
+            return expansion
+    return alert_text.strip()
+
+
+def _format_entity_item(value: object) -> str:
+    """Render an entity list item as a stable, human-readable token."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in (
+            "username",
+            "hostname",
+            "entity_id",
+            "name",
+            "ip",
+            "domain",
+            "path",
+            "process_name",
+        ):
+            item = value.get(key)
+            if item:
+                return str(item)
+    return str(value)
 
 
 def _derive_case_id(event_id: str) -> str:

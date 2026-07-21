@@ -32,6 +32,7 @@ from app.models.tool_meta import (
     ToolResultStatus,
     WrongExecutionChannelError,
 )
+from app.models.workflow import MAX_DUPLICATE_TOOL_CALLS
 from app.providers.tools.mock_provider import MockToolProvider, bind_mock_tool_provider
 from app.services.tool_call_log_service import ToolCallLogService
 from app.tools.circuit_breaker import CircuitBreakerRegistry
@@ -132,10 +133,16 @@ def _make_registry(state: _FakeToolState) -> ToolRegistry:
 
 class RecordingConvergenceGuard:
     def __init__(self) -> None:
-        self.steps: list[tuple[str, str]] = []
+        self.steps: list[tuple[str, str, dict[str, Any] | None]] = []
 
-    async def record_step(self, event_id: str, *, tool_name: str) -> None:
-        self.steps.append((event_id, tool_name))
+    async def record_step(
+        self,
+        event_id: str,
+        *,
+        tool_name: str,
+        params: dict[str, Any] | None = None,
+    ) -> None:
+        self.steps.append((event_id, tool_name, params))
 
     async def should_stop(self, event_id: str) -> bool:
         return False
@@ -333,6 +340,23 @@ async def test_convergence_guard_records_each_dispatch_attempt(
     )
 
     assert len(guard.steps) == 3
+    assert guard.steps[0][2] == {"fail_times": 2}
+
+
+@pytest.mark.asyncio
+async def test_convergence_guard_same_tool_different_params_no_duplicate_stop(
+    registry: ToolRegistry,
+) -> None:
+    from app.orchestration.convergence_guard import ConvergenceGuard
+
+    guard = ConvergenceGuard()
+    executor = ToolExecutor(registry=registry, convergence_guard=guard)
+    event_id = f"evt-{_sfx()}"
+    for i in range(MAX_DUPLICATE_TOOL_CALLS):
+        result = await executor.call("fake_flaky", {"fail_times": i}, event_id)
+        assert result.status is ToolResultStatus.SUCCESS
+    decision = await guard.should_stop(event_id)
+    assert decision.stop is False
 
 
 @pytest.mark.asyncio

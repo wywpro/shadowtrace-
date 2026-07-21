@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -31,6 +32,9 @@ from app.services.case_kb_service import CaseKBService
 from app.services.knowledge_store import KnowledgeStore
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+REPO_ROOT = BACKEND_DIR.parent
+FP_CASES_FILE = REPO_ROOT / "data" / "knowledge" / "fp_cases.json"
+HISTORY_CASES_FILE = REPO_ROOT / "data" / "knowledge" / "history_cases.json"
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql+asyncpg://shadowtrace:shadowtrace@localhost:5432/shadowtrace",
@@ -282,6 +286,46 @@ class TestSeedLoading:
         assert await knowledge_store.count(HISTORY_KB_NAME) == len(cases)
         assert len(cases) == 16
 
+    @pytest.mark.asyncio
+    async def test_fp_cases_json_file_loads(
+        self, knowledge_store: KnowledgeStore, clean_knowledge: None
+    ) -> None:
+        """Seed data file must contain at least 10 FP cases and load into the KB."""
+        raw = json.loads(FP_CASES_FILE.read_text(encoding="utf-8"))
+        cases = [FalsePositiveCase.model_validate(row) for row in raw]
+        assert len(cases) >= 10
+
+        chunks = [_make_fp_chunk(case) for case in cases]
+        await knowledge_store.upsert_chunks(FP_KB_NAME, chunks)
+        assert await knowledge_store.count(FP_KB_NAME) == len(cases)
+
+    @pytest.mark.asyncio
+    async def test_history_cases_json_file_loads(
+        self, knowledge_store: KnowledgeStore, clean_knowledge: None
+    ) -> None:
+        """Seed data file must contain at least 16 history cases and load into the KB."""
+        raw = json.loads(HISTORY_CASES_FILE.read_text(encoding="utf-8"))
+        cases = [HistoryCase.model_validate(row) for row in raw]
+        assert len(cases) >= 16
+
+        chunks = [_make_history_chunk(case) for case in cases]
+        await knowledge_store.upsert_chunks(HISTORY_KB_NAME, chunks)
+        assert await knowledge_store.count(HISTORY_KB_NAME) == len(cases)
+
+    @pytest.mark.asyncio
+    async def test_fp_json_upsert_idempotent(
+        self, knowledge_store: KnowledgeStore, clean_knowledge: None
+    ) -> None:
+        """Repeated upsert from JSON seed must not duplicate chunks."""
+        raw = json.loads(FP_CASES_FILE.read_text(encoding="utf-8"))
+        cases = [FalsePositiveCase.model_validate(row) for row in raw[:3]]
+        chunks = [_make_fp_chunk(case) for case in cases]
+
+        await knowledge_store.upsert_chunks(FP_KB_NAME, chunks)
+        assert await knowledge_store.count(FP_KB_NAME) == len(chunks)
+        await knowledge_store.upsert_chunks(FP_KB_NAME, chunks)
+        assert await knowledge_store.count(FP_KB_NAME) == len(chunks)
+
 
 # ── Search tests ─────────────────────────────────────────────────────
 
@@ -327,9 +371,11 @@ class TestFpCaseSearch:
             "executed automated password rotation from PC-OPS-JUMP-01"
         )
         results = await case_kb_service.search_fp_cases(alert_text, top_k=5)
-        # With mock embeddings, ranking is non-semantic; verify we get results.
         assert len(results) >= 1
-        assert all(r.kb_name == FP_KB_NAME for r in results)
+        top = results[0]
+        assert top.metadata.get("case_id") == "case-00000001"
+        assert top.retrieval_method in {"keyword", "hybrid", "vector"}
+        assert top.score >= 0.5, f"Expected score >= 0.5, got {top.score:.4f}"
 
     @pytest.mark.asyncio
     async def test_no_results_for_empty_kb(
@@ -503,6 +549,8 @@ class TestArchiveEventAsCase:
         assert retrieved[0].metadata["case_label"] == "true_positive"
         assert retrieved[0].metadata["event_type"] == "data_exfiltration"
         assert retrieved[0].metadata["risk_score"] == 75
+        assert "zhangsan" in retrieved[0].metadata["key_entities"]
+        assert "PC-FIN-023" in retrieved[0].metadata["key_entities"]
 
     @pytest.mark.asyncio
     async def test_archive_nonexistent_event_raises(self, case_kb_service: CaseKBService) -> None:

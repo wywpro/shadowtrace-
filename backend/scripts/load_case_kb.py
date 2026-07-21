@@ -2,22 +2,27 @@
 
 Idempotent — safe to run multiple times.  Usage:
 
-    cd backend && python scripts/load_case_kb.py
+    cd backend && python -m scripts.load_case_kb
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.core.config import get_settings
-from app.core.embedding.service import EmbeddingService
-from app.models.case import (
+_BACKEND = Path(__file__).resolve().parents[1]
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+
+from app.core.config import Settings  # noqa: E402
+from app.core.embedding.service import EmbeddingService  # noqa: E402
+from app.models.case import (  # noqa: E402
     FalsePositiveCase,
     HistoryCase,
     fp_case_metadata,
@@ -26,10 +31,10 @@ from app.models.case import (
     history_case_to_text,
     make_chunk_id,
 )
-from app.models.knowledge import KnowledgeChunk
-from app.services.knowledge_store import KnowledgeStore
+from app.models.knowledge import KnowledgeChunk  # noqa: E402
+from app.services.knowledge_store import KnowledgeStore  # noqa: E402
 
-ROOT_DIR = Path(__file__).resolve().parents[2]  # repo root (above backend/)
+ROOT_DIR = _BACKEND.parent
 DATA_DIR = ROOT_DIR / "data" / "knowledge"
 
 FP_CASES_FILE = DATA_DIR / "fp_cases.json"
@@ -37,6 +42,11 @@ HISTORY_CASES_FILE = DATA_DIR / "history_cases.json"
 
 FP_KB_NAME = "fp_case_kb"
 HISTORY_KB_NAME = "history_case_kb"
+
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql+asyncpg://shadowtrace:shadowtrace@localhost:5432/shadowtrace",
+)
 
 
 def _load_json(path: Path) -> list[dict[str, object]]:
@@ -81,9 +91,9 @@ async def _upsert_history_cases(store: KnowledgeStore, cases: list[HistoryCase])
 
 
 async def main() -> None:
-    settings = get_settings()
+    settings = Settings()
     engine = create_async_engine(
-        settings.database_url,
+        DATABASE_URL,
         poolclass=NullPool,
     )
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)

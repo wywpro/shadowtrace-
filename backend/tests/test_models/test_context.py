@@ -51,6 +51,7 @@ EXPECTED_CONTEXT_FIELDS = {
     "quality_scores",
     "scratchpad",
     "degraded_flags",
+    "triage_degraded",
 }
 
 

@@ -13,6 +13,7 @@ import pytest
 import respx
 from pydantic import BaseModel
 
+from app.agents.prompts.triage_prompt import TriageLLMResponse
 from app.core.config import Settings
 from app.core.errors import BudgetExceededError
 from app.core.llm.base import (
@@ -130,7 +131,7 @@ async def test_mock_mode_never_constructs_or_calls_http(monkeypatch: pytest.Monk
         event_id="evt-2026-no-network",
         agent_name="TriageAgent",
         prompt_key="triage_extract",
-        response_model=TriagePayload,
+        response_model=TriageLLMResponse,
     )
     assert response.model_name == "mock-model"
 
@@ -384,7 +385,13 @@ async def test_guard_and_budget_hooks_run_for_each_actual_request() -> None:
         def __init__(self) -> None:
             self.steps: list[tuple[str, str, str]] = []
 
-        def record_step(self, event_id: str, step_type: str, signature: str) -> None:
+        def record_step(
+            self,
+            event_id: str,
+            step_type: str,
+            signature: str = "",
+            **_: Any,
+        ) -> None:
             self.steps.append((event_id, step_type, signature))
 
         def should_stop(self, event_id: str) -> Any:

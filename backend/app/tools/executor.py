@@ -61,7 +61,13 @@ def derive_call_nature(meta: ToolMeta) -> CallNature:
 
 @runtime_checkable
 class ConvergenceGuardPort(Protocol):
-    async def record_step(self, event_id: str, *, tool_name: str) -> None: ...
+    async def record_step(
+        self,
+        event_id: str,
+        *,
+        tool_name: str,
+        params: dict[str, Any] | None = None,
+    ) -> None: ...
 
     async def should_stop(self, event_id: str) -> bool: ...
 
@@ -118,7 +124,13 @@ class InMemoryExecutionJobStore:
 
 
 class NoopConvergenceGuard:
-    async def record_step(self, event_id: str, *, tool_name: str) -> None:
+    async def record_step(
+        self,
+        event_id: str,
+        *,
+        tool_name: str,
+        params: dict[str, Any] | None = None,
+    ) -> None:
         return None
 
     async def should_stop(self, event_id: str) -> bool:
@@ -283,7 +295,7 @@ class ToolExecutor:
                 await self.sleep(policy.delay_for_attempt(attempt))
 
             if guard is not None:
-                await guard.record_step(event_id, tool_name=tool_name)
+                await guard.record_step(event_id, tool_name=tool_name, params=params)
 
             if not breaker.allow_request():
                 result = self._circuit_open_result(
