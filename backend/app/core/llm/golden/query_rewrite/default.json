@@ -1,0 +1,12 @@
+{
+  "content": {
+    "rewrites": [
+      "alternative search for the same security event using different terminology",
+      "related threat hunting keywords for the incident investigation"
+    ]
+  },
+  "model_name": "mock-model",
+  "prompt_tokens": 24,
+  "completion_tokens": 16,
+  "total_tokens": 40
+}

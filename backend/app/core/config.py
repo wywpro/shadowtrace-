@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     embedding_api_base_url: str = Field(default="", alias="EMBEDDING_API_BASE_URL")
     embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
 
+    rerank_mode: str = Field(default="mock", alias="RERANK_MODE")
+
     budget_enabled: bool = Field(default=True, alias="BUDGET_ENABLED")
     global_token_budget: int = Field(default=1_000_000, alias="GLOBAL_TOKEN_BUDGET")
     event_token_budget: int = Field(default=100_000, alias="EVENT_TOKEN_BUDGET")

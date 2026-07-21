@@ -1,4 +1,4 @@
-"""Pydantic domain models for knowledge chunks and retrieval results (ISSUE-041)."""
+"""Pydantic domain models for knowledge chunks and retrieval results (ISSUE-041, ISSUE-045)."""
 
 from __future__ import annotations
 
@@ -17,11 +17,32 @@ class KnowledgeChunk(BaseModel):
 
 
 class RetrievedChunk(BaseModel):
-    """A chunk returned from vector or keyword search."""
+    """A chunk returned from vector or keyword search, or after RRF fusion."""
 
     chunk_id: str
     kb_name: str
     content: str
     metadata: dict[str, Any] = Field(default_factory=dict)
-    score: float = Field(..., description="Similarity (vector) or rank (keyword)")
-    retrieval_method: str = Field(..., description="'vector' or 'keyword'")
+    score: float = Field(..., description="Normalized 0-1 relevance score (RRF or rerank)")
+    retrieval_method: str = Field(..., description="'vector', 'keyword', 'hybrid', or 'reranked'")
+    raw_rrf_score: float = Field(default=0.0, description="Raw RRF score before normalization")
+
+
+class Citation(BaseModel):
+    """A citation referencing a retrieved chunk (ISSUE-045)."""
+
+    citation_id: str = Field(..., pattern=r"^cit-[0-9a-fA-F]{8}$", description="cit-{8 hex}")
+    chunk_id: str
+    kb_name: str
+    quoted_text: str = Field(..., description="Relevant excerpt, max 200 chars")
+    relevance_score: float
+
+
+class RetrievalResult(BaseModel):
+    """Complete result from the RAG retrieval pipeline (ISSUE-045)."""
+
+    query: str
+    rewritten_queries: list[str] = Field(default_factory=list)
+    chunks: list[RetrievedChunk] = Field(default_factory=list)
+    citations: list[Citation] = Field(default_factory=list)
+    degraded_steps: list[str] = Field(default_factory=list)
