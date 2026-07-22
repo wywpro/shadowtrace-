@@ -109,9 +109,7 @@ class _FakeEventService:
             return self.reports_by_event.get(event_id)
         return None
 
-    async def upsert_generate_report_action(
-        self, event_id: str, *, plan_revision: int = 1
-    ) -> str:
+    async def upsert_generate_report_action(self, event_id: str, *, plan_revision: int = 1) -> str:
         fp = generate_report_action_fingerprint(event_id, plan_revision)
         if fp in self._fingerprints:
             for action in self.actions:
@@ -363,8 +361,14 @@ async def test_main_scenario_fifteen_sections_and_key_facts(
 
     published = [e for e in event_bus.events if e[1] == "report_generated"]
     assert published
-    assert published[0][2]["content_sha256"] == agent.last_content_sha256
-    assert published[0][2]["report_id"] == report.report_id
+    bus_payload = published[0][2]
+    assert bus_payload == {
+        "report_id": report.report_id,
+        "sections": 15,
+        "generated_at": report.generated_at.isoformat(),
+    }
+    appendix = next(s for s in report.sections if s.key == "appendix_index")
+    assert appendix.data.get("content_sha256") == agent.last_content_sha256
     assert agent.last_content_sha256
     assert agent.last_report_markdown
     assert "zhangsan" in agent.last_report_markdown

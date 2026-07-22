@@ -782,10 +782,7 @@ class EventService:
     ) -> str:
         """Idempotent system Action for local report generation (ISSUE-036)."""
         now = datetime.now(UTC)
-        material = (
-            f"{event_id}|{int(plan_revision)}|generate_report|system|system|"
-            f"|immediate|"
-        )
+        material = f"{event_id}|{int(plan_revision)}|generate_report|system|system||immediate|"
         fingerprint = hashlib.sha256(material.encode("utf-8")).hexdigest()
         async with self._session_factory() as session:
             async with session.begin():

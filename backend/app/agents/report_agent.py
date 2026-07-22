@@ -164,7 +164,7 @@ class ReportAgent(BaseAgent[ReportAgentInput, InvestigationReport]):
         await self._persist_report(report)
         await self._write_context(input.event_id, report)
         await self._record_generate_report_action(input)
-        await self._publish_report_generated(report, content_sha256, markdown)
+        await self._publish_report_generated(report)
         return report
 
     async def _generate_with_llm(
@@ -248,9 +248,7 @@ class ReportAgent(BaseAgent[ReportAgentInput, InvestigationReport]):
             )
         return merged
 
-    def _stamp_sha(
-        self, sections: list[ReportSection], content_sha256: str
-    ) -> list[ReportSection]:
+    def _stamp_sha(self, sections: list[ReportSection], content_sha256: str) -> list[ReportSection]:
         out: list[ReportSection] = []
         for section in sections:
             data = dict(section.data)
@@ -287,18 +285,21 @@ class ReportAgent(BaseAgent[ReportAgentInput, InvestigationReport]):
         sections: list[ReportSection],
     ) -> str:
         template = self._jinja.get_template("report_template.md.j2")
-        return template.render(
-            title=title,
-            summary=summary,
-            sections=[
-                {
-                    "key": s.key,
-                    "title": s.title,
-                    "content": s.content,
-                }
-                for s in sections
-            ],
-        ).strip() + "\n"
+        return (
+            template.render(
+                title=title,
+                summary=summary,
+                sections=[
+                    {
+                        "key": s.key,
+                        "title": s.title,
+                        "content": s.content,
+                    }
+                    for s in sections
+                ],
+            ).strip()
+            + "\n"
+        )
 
     def _context_summary(
         self,
@@ -481,32 +482,20 @@ class ReportAgent(BaseAgent[ReportAgentInput, InvestigationReport]):
     async def _publish_report_generated(
         self,
         report: InvestigationReport,
-        content_sha256: str,
-        markdown: str,
     ) -> None:
         if self.event_bus is None:
             return
         try:
+            payload: dict[str, Any] = {
+                "report_id": report.report_id,
+                "sections": len(report.sections),
+            }
+            if report.generated_at is not None:
+                payload["generated_at"] = report.generated_at.isoformat()
             await self.event_bus.publish_event(
                 report.event_id,
                 "report_generated",
-                {
-                    "report_id": report.report_id,
-                    "generated_by": report.generated_by,
-                    "content_sha256": content_sha256,
-                    "risk_score": report.risk_score,
-                    "severity": report.severity.value,
-                    "final_verdict": report.final_verdict.value,
-                    "section_keys": [s.key for s in report.sections],
-                    # Structured JSON view (not a model field).
-                    "report_json": {
-                        "title": report.title,
-                        "summary": report.summary,
-                        "sections": [s.model_dump(mode="json") for s in report.sections],
-                    },
-                    "report_markdown_sha256": content_sha256,
-                    "report_markdown_bytes": len(markdown.encode("utf-8")),
-                },
+                payload,
             )
         except Exception:
             logger.warning(
@@ -518,10 +507,7 @@ class ReportAgent(BaseAgent[ReportAgentInput, InvestigationReport]):
 
 def generate_report_action_fingerprint(event_id: str, plan_revision: int) -> str:
     """Stable fingerprint for the system generate_report Action."""
-    material = (
-        f"{event_id}|{plan_revision}|generate_report|system|system|"
-        f"|immediate|"
-    )
+    material = f"{event_id}|{plan_revision}|generate_report|system|system||immediate|"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 

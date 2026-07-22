@@ -72,8 +72,8 @@ class ReportSectionBuilder:
         content_sha256: str | None = None,
     ) -> list[ReportSection]:
         # Prefer triage entities; otherwise derive labels from evidence raw/related.
-        account_lines, asset_lines, process_lines, file_lines, external_lines = (
-            self._entity_lines(triage_result, evidence_output)
+        account_lines, asset_lines, process_lines, file_lines, external_lines = self._entity_lines(
+            triage_result, evidence_output
         )
         response_actions = self._response_actions(response_plan)
 
@@ -281,10 +281,7 @@ class ReportSectionBuilder:
         ]
         if reasoning:
             lines.append(f"triage_reasoning: {reasoning}")
-        if (
-            risk_assessment.severity is Severity.LOW
-            and not evidence_output.evidence_list
-        ):
+        if risk_assessment.severity is Severity.LOW and not evidence_output.evidence_list:
             lines.append(PLACEHOLDER_LOW_RISK_NO_EVIDENCE)
         return "\n".join(lines)
 
@@ -344,9 +341,7 @@ class ReportSectionBuilder:
         lines = ["证据时间线（StorylineService 后置，此处使用证据兜底）："]
         for idx, item in enumerate(ordered, start=1):
             tech = f" [{item.mitre_technique}]" if item.mitre_technique else ""
-            lines.append(
-                f"{idx}. {_fmt_ts(item.timestamp)} — {item.description}{tech}"
-            )
+            lines.append(f"{idx}. {_fmt_ts(item.timestamp)} — {item.description}{tech}")
         return "\n".join(lines)
 
     def _attack_mapping(
@@ -362,9 +357,7 @@ class ReportSectionBuilder:
             for match in rag_output.get("attack_techniques") or []:
                 if isinstance(match, dict) and match.get("technique_id"):
                     name = match.get("technique_name") or ""
-                    techniques.append(
-                        f"{match['technique_id']} {name}".strip()
-                    )
+                    techniques.append(f"{match['technique_id']} {name}".strip())
         techniques = list(dict.fromkeys(techniques))
         if not techniques:
             return "暂无 ATT&CK 技术映射"
@@ -385,11 +378,7 @@ class ReportSectionBuilder:
             return PLACEHOLDER_NO_ACTIONS
         lines: list[str] = []
         for action in response_actions:
-            wb = (
-                action.writeback_status.value
-                if action.writeback_status is not None
-                else "null"
-            )
+            wb = action.writeback_status.value if action.writeback_status is not None else "null"
             effect = action.effect_verification_status or "unset"
             lines.append(
                 f"{action.action_id} | {action.action_name} | tool={action.tool_name} | "
@@ -398,9 +387,7 @@ class ReportSectionBuilder:
             )
         return "\n".join(lines)
 
-    def _verification_results(
-        self, verification_result: VerificationResult | None
-    ) -> str:
+    def _verification_results(self, verification_result: VerificationResult | None) -> str:
         if verification_result is None or not verification_result.results:
             return PLACEHOLDER_NO_VERIFICATION
         lines = [
@@ -408,11 +395,7 @@ class ReportSectionBuilder:
             f"verification_phase={verification_result.verification_phase.value}",
         ]
         for item in verification_result.results:
-            wb = (
-                item.writeback_status.value
-                if item.writeback_status is not None
-                else "null"
-            )
+            wb = item.writeback_status.value if item.writeback_status is not None else "null"
             receipt = ",".join(item.writeback_ids) if item.writeback_ids else "-"
             lines.append(
                 f"{item.action_id} | effect={item.effect_status.value} | "
