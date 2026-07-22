@@ -5,41 +5,34 @@
     "steps": [
       {
         "step_order": 1,
-        "step_goal": "收集威胁情报：查询IOC信誉与关联域名",
+        "step_goal": "收集威胁情报：查询IOC信誉与DNS",
         "assigned_agent": "evidence_agent",
-        "required_tools": ["query_threat_intel", "query_dns", "query_whois"],
+        "required_tools": ["query_threat_intel", "query_dns", "query_asset_info"],
         "success_criteria": "获取至少2条IOC的外部情报数据"
       },
       {
         "step_order": 2,
         "step_goal": "采集终端与网络证据：进程、连接、文件访问",
         "assigned_agent": "evidence_agent",
-        "required_tools": ["query_process_tree", "query_network_connections", "query_file_events"],
+        "required_tools": ["query_edr_process", "query_network_flow", "query_file_access"],
         "success_criteria": "获取进程树和网络连接记录"
       },
       {
         "step_order": 3,
-        "step_goal": "采集身份与访问证据：登录记录、账号活动",
+        "step_goal": "采集身份证据：登录记录",
         "assigned_agent": "evidence_agent",
-        "required_tools": ["query_login_history", "query_account_activity"],
-        "success_criteria": "获取账号登录和活动记录"
+        "required_tools": ["query_account_login"],
+        "success_criteria": "获取账号登录记录"
       },
       {
         "step_order": 4,
-        "step_goal": "采集数据安全证据：文件访问、外传检测",
-        "assigned_agent": "evidence_agent",
-        "required_tools": ["query_data_access_logs", "query_dlp_events"],
-        "success_criteria": "获取数据访问和外传检测记录"
-      },
-      {
-        "step_order": 5,
         "step_goal": "综合风险评估：基于证据计算风险分数",
         "assigned_agent": "risk_agent",
         "required_tools": [],
         "success_criteria": "产出risk_score >= 0且包含至少3个风险因子"
       },
       {
-        "step_order": 6,
+        "step_order": 5,
         "step_goal": "生成处置方案：根据风险等级规划响应动作",
         "assigned_agent": "response_agent",
         "required_tools": [],

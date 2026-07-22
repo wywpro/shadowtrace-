@@ -2,16 +2,24 @@
 
 These are used when LLM is unavailable. Each plan provides a minimal but safe
 investigation path that keeps the main pipeline running (降级策略).
+
+Evidence tools align with ``EVIDENCE_QUERY_ORDER`` / ``QUERY_TOOL_METAS`` on main.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 
+from app.agents.evidence_agent import EVIDENCE_QUERY_ORDER
 from app.models.agent_io import ExecutionPlan, PlanBudget, PlanStep
 from app.models.enums import EventType
 
-PlanBuilder = Callable[[str, str], ExecutionPlan]
+PlanBuilder = Callable[[str, str, bool], ExecutionPlan]
+
+# Canonical seven-source evidence queries (ISSUE-033).
+SEVEN_EVIDENCE_TOOLS: list[str] = list(EVIDENCE_QUERY_ORDER)
+
+MIN_PLAN_STEPS = 4
 
 
 def _build_standard_plan(
@@ -55,7 +63,7 @@ def _build_standard_plan(
                 step_order=offset,
                 step_goal="匹配ATT&CK技术与历史案例：检索知识库",
                 assigned_agent="rag_agent",
-                required_tools=["search_kb", "match_techniques"],
+                required_tools=[],
                 success_criteria="返回至少1条技术匹配或相似案例",
             )
         )
@@ -91,118 +99,108 @@ def _build_standard_plan(
     )
 
 
+def _seven_query_evidence_steps() -> list[tuple[str, str, list[str], str]]:
+    """Split the seven canonical queries across three evidence steps."""
+    q = SEVEN_EVIDENCE_TOOLS
+    return [
+        (
+            "身份与终端取证：登录、进程、文件访问",
+            "evidence_agent",
+            [q[0], q[1], q[2]],
+            "获取账号登录、EDR进程与文件访问记录",
+        ),
+        (
+            "网络与资产取证：流量、DNS、资产信息",
+            "evidence_agent",
+            [q[3], q[4], q[5]],
+            "获取网络流量、DNS与资产信息",
+        ),
+        (
+            "威胁情报查询",
+            "evidence_agent",
+            [q[6]],
+            "获取IOC威胁情报数据",
+        ),
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Per-EventType default plans
 # --------------------------------------------------------------------------- #
 
 
-def _plan_data_exfiltration(event_id: str, plan_id: str) -> ExecutionPlan:
-    """数据外泄：七路查询覆盖IOC、终端、网络、身份、数据安全"""
+def _plan_data_exfiltration(event_id: str, plan_id: str, rag_enabled: bool) -> ExecutionPlan:
+    """数据外泄：七路查询 + 可选 graph/rag"""
+    return _build_standard_plan(
+        event_id,
+        plan_id,
+        evidence_steps=_seven_query_evidence_steps(),
+        include_graph=True,
+        include_rag=rag_enabled,
+    )
+
+
+def _plan_account_anomaly(event_id: str, plan_id: str, rag_enabled: bool) -> ExecutionPlan:
+    q = SEVEN_EVIDENCE_TOOLS
     return _build_standard_plan(
         event_id,
         plan_id,
         evidence_steps=[
             (
-                "威胁情报查询：IOC信誉与关联域名",
+                "账号活动审计",
                 "evidence_agent",
-                ["query_threat_intel", "query_dns", "query_whois"],
-                "获取IOC外部情报数据",
+                [q[0], q[2]],
+                "获取账号登录与文件访问记录",
             ),
             (
-                "终端进程与网络连接采集",
+                "终端与网络关联取证",
                 "evidence_agent",
-                ["query_process_tree", "query_network_connections"],
-                "获取进程树和网络连接记录",
+                [q[1], q[3], q[4]],
+                "获取进程、网络与DNS记录",
             ),
             (
-                "文件访问与外传检测",
+                "威胁情报验证",
                 "evidence_agent",
-                ["query_file_events", "query_dlp_events"],
-                "获取文件访问和外传检测记录",
+                [q[5], q[6]],
+                "获取资产与IOC情报",
+            ),
+        ],
+        include_rag=rag_enabled,
+    )
+
+
+def _plan_host_compromise(event_id: str, plan_id: str, rag_enabled: bool) -> ExecutionPlan:
+    q = SEVEN_EVIDENCE_TOOLS
+    return _build_standard_plan(
+        event_id,
+        plan_id,
+        evidence_steps=[
+            (
+                "终端深度取证",
+                "evidence_agent",
+                [q[1], q[2]],
+                "获取进程树与文件事件",
             ),
             (
-                "身份登录与账号活动审计",
+                "网络连接检测",
                 "evidence_agent",
-                ["query_login_history", "query_account_activity"],
-                "获取账号登录和活动记录",
+                [q[3], q[4]],
+                "获取网络连接与DNS记录",
             ),
             (
-                "数据访问日志采集",
+                "身份与情报",
                 "evidence_agent",
-                ["query_data_access_logs"],
-                "获取数据访问记录",
+                [q[0], q[5], q[6]],
+                "获取登录、资产与威胁情报",
             ),
         ],
         include_graph=True,
-        include_rag=True,
+        include_rag=rag_enabled,
     )
 
 
-def _plan_account_anomaly(event_id: str, plan_id: str) -> ExecutionPlan:
-    """账号异常：重点身份溯源与登录审计"""
-    return _build_standard_plan(
-        event_id,
-        plan_id,
-        evidence_steps=[
-            (
-                "账号活动审计：登录历史、权限变更",
-                "evidence_agent",
-                ["query_login_history", "query_account_activity", "query_privilege_changes"],
-                "获取账号完整活动记录",
-            ),
-            (
-                "关联终端取证：登录来源主机进程与网络",
-                "evidence_agent",
-                ["query_process_tree", "query_network_connections"],
-                "获取关联主机活动记录",
-            ),
-            (
-                "威胁情报验证：关联IP/域名信誉",
-                "evidence_agent",
-                ["query_threat_intel", "query_dns"],
-                "获取关联IOC情报",
-            ),
-        ],
-    )
-
-
-def _plan_host_compromise(event_id: str, plan_id: str) -> ExecutionPlan:
-    """主机失陷：终端取证为主、网络与身份为辅"""
-    return _build_standard_plan(
-        event_id,
-        plan_id,
-        evidence_steps=[
-            (
-                "终端进程深度取证",
-                "evidence_agent",
-                ["query_process_tree", "query_file_events"],
-                "获取进程树和文件事件",
-            ),
-            (
-                "网络连接与横向移动检测",
-                "evidence_agent",
-                ["query_network_connections", "query_lateral_movement"],
-                "获取网络连接和横向移动记录",
-            ),
-            (
-                "登录来源与账号关联审计",
-                "evidence_agent",
-                ["query_login_history", "query_account_activity"],
-                "获取关联账号活动",
-            ),
-            (
-                "威胁情报查询：进程哈希与连接IP信誉",
-                "evidence_agent",
-                ["query_threat_intel", "query_dns"],
-                "获取IOC情报",
-            ),
-        ],
-        include_graph=True,
-    )
-
-
-def _plan_insider_threat(event_id: str, plan_id: str) -> ExecutionPlan:
-    """内部威胁：数据访问与账号行为并重"""
+def _plan_insider_threat(event_id: str, plan_id: str, rag_enabled: bool) -> ExecutionPlan:
+    q = SEVEN_EVIDENCE_TOOLS
     return _build_standard_plan(
         event_id,
         plan_id,
@@ -210,27 +208,28 @@ def _plan_insider_threat(event_id: str, plan_id: str) -> ExecutionPlan:
             (
                 "数据访问行为审计",
                 "evidence_agent",
-                ["query_data_access_logs", "query_dlp_events", "query_file_events"],
-                "获取数据访问和外传记录",
+                [q[2], q[0]],
+                "获取文件访问与账号登录记录",
             ),
             (
-                "账号活动与权限变更审计",
+                "终端与网络操作取证",
                 "evidence_agent",
-                ["query_account_activity", "query_privilege_changes", "query_login_history"],
-                "获取账号活动和权限变更记录",
+                [q[1], q[3]],
+                "获取进程与网络记录",
             ),
             (
-                "终端操作取证",
+                "资产与情报",
                 "evidence_agent",
-                ["query_process_tree", "query_network_connections"],
-                "获取终端操作记录",
+                [q[5], q[6]],
+                "获取资产与威胁情报",
             ),
         ],
+        include_rag=rag_enabled,
     )
 
 
-def _plan_malicious_process(event_id: str, plan_id: str) -> ExecutionPlan:
-    """恶意进程：进程链分析与威胁情报"""
+def _plan_malicious_process(event_id: str, plan_id: str, rag_enabled: bool) -> ExecutionPlan:
+    q = SEVEN_EVIDENCE_TOOLS
     return _build_standard_plan(
         event_id,
         plan_id,
@@ -238,104 +237,101 @@ def _plan_malicious_process(event_id: str, plan_id: str) -> ExecutionPlan:
             (
                 "进程链完整取证",
                 "evidence_agent",
-                ["query_process_tree", "query_file_events"],
-                "获取完整进程树和文件操作",
+                [q[1], q[2]],
+                "获取进程树和文件操作",
             ),
             (
-                "网络连接与C2通信检测",
+                "网络与DNS检测",
                 "evidence_agent",
-                ["query_network_connections", "query_dns"],
+                [q[3], q[4]],
                 "获取网络连接和DNS记录",
             ),
             (
-                "威胁情报查询：进程哈希、IP、域名信誉",
+                "威胁情报查询",
                 "evidence_agent",
-                ["query_threat_intel", "query_whois"],
-                "获取IOC情报",
+                [q[5], q[6]],
+                "获取资产与IOC情报",
             ),
         ],
-        include_rag=True,
+        include_rag=rag_enabled,
     )
 
 
-def _plan_suspicious_domain(event_id: str, plan_id: str) -> ExecutionPlan:
-    """可疑域名：DNS溯源与关联分析"""
+def _plan_suspicious_domain(event_id: str, plan_id: str, rag_enabled: bool) -> ExecutionPlan:
+    q = SEVEN_EVIDENCE_TOOLS
     return _build_standard_plan(
         event_id,
         plan_id,
         evidence_steps=[
             (
-                "域名情报查询",
+                "域名情报与DNS溯源",
                 "evidence_agent",
-                ["query_threat_intel", "query_dns", "query_whois", "query_passive_dns"],
-                "获取域名注册、解析与情报数据",
+                [q[4], q[6], q[5]],
+                "获取DNS、威胁情报与资产数据",
             ),
             (
                 "关联主机访问记录",
                 "evidence_agent",
-                ["query_network_connections", "query_process_tree"],
-                "获取访问该域名的内网主机记录",
+                [q[3], q[1]],
+                "获取网络连接与进程记录",
             ),
         ],
         include_graph=True,
+        include_rag=rag_enabled,
     )
 
 
-def _plan_lateral_movement(event_id: str, plan_id: str) -> ExecutionPlan:
-    """横向移动：多主机关联与登录链分析"""
+def _plan_lateral_movement(event_id: str, plan_id: str, rag_enabled: bool) -> ExecutionPlan:
+    q = SEVEN_EVIDENCE_TOOLS
     return _build_standard_plan(
         event_id,
         plan_id,
         evidence_steps=[
             (
-                "横向移动路径检测",
+                "横向移动与登录链分析",
                 "evidence_agent",
-                ["query_lateral_movement", "query_login_history", "query_privilege_changes"],
-                "获取横向移动和登录记录",
+                [q[0], q[3], q[1]],
+                "获取登录、网络与进程记录",
             ),
             (
-                "多主机进程与网络取证",
+                "多主机取证与情报",
                 "evidence_agent",
-                ["query_process_tree", "query_network_connections"],
-                "获取多主机活动记录",
-            ),
-            (
-                "威胁情报验证",
-                "evidence_agent",
-                ["query_threat_intel", "query_dns"],
-                "获取IOC情报",
+                [q[2], q[5], q[6]],
+                "获取文件、资产与威胁情报",
             ),
         ],
         include_graph=True,
-        include_rag=True,
+        include_rag=rag_enabled,
     )
 
 
-def _plan_other(event_id: str, plan_id: str) -> ExecutionPlan:
+def _plan_other(event_id: str, plan_id: str, rag_enabled: bool) -> ExecutionPlan:
     """通用/未知类型：保守只读调查模板"""
+    q = SEVEN_EVIDENCE_TOOLS
     return _build_standard_plan(
         event_id,
         plan_id,
         evidence_steps=[
             (
-                "基础威胁情报查询",
+                "基础威胁情报与DNS",
                 "evidence_agent",
-                ["query_threat_intel", "query_dns"],
-                "获取IOC基础情报",
+                [q[4], q[6]],
+                "获取DNS与IOC基础情报",
             ),
             (
-                "终端基础信息采集",
+                "终端与网络基础信息",
                 "evidence_agent",
-                ["query_process_tree", "query_network_connections"],
-                "获取终端进程和网络基础信息",
+                [q[1], q[3]],
+                "获取进程和网络基础信息",
             ),
             (
                 "账号活动基础审计",
                 "evidence_agent",
-                ["query_login_history", "query_account_activity"],
-                "获取账号登录和活动基础信息",
+                [q[0], q[2]],
+                "获取账号登录和文件访问基础信息",
             ),
         ],
+        include_rag=rag_enabled,
     )
 
 
@@ -354,23 +350,71 @@ DEFAULT_PLANS: dict[EventType, PlanBuilder] = {
     EventType.OTHER: _plan_other,
 }
 
-# --------------------------------------------------------------------------- #
-# Convenience function
-# --------------------------------------------------------------------------- #
 
-
-def get_default_plan(event_id: str, event_type: EventType, plan_id: str) -> ExecutionPlan:
-    """Return the rule-based default plan for the given event type.
-
-    Raises KeyError if the event_type has no registered default plan — this is
-    intentional: any new EventType added without a default plan will cause a
-    test failure until the gap is filled.
-    """
+def get_default_plan(
+    event_id: str,
+    event_type: EventType,
+    plan_id: str,
+    *,
+    rag_enabled: bool = False,
+) -> ExecutionPlan:
+    """Return the rule-based default plan for the given event type."""
     builder = DEFAULT_PLANS[event_type]
-    return builder(event_id, plan_id)
+    return builder(event_id, plan_id, rag_enabled)
+
+
+def get_revised_default_plan(
+    event_id: str,
+    event_type: EventType,
+    plan_id: str,
+    revision: int,
+    failure_reason: str,
+    *,
+    rag_enabled: bool = False,
+) -> ExecutionPlan:
+    """Deterministic revised plan when LLM revision fails.
+
+    Prepends a full seven-query evidence sweep so step goals differ from the
+    initial DEFAULT_PLANS output (acceptance criterion #2).
+    """
+    base = get_default_plan(event_id, event_type, plan_id, rag_enabled=rag_enabled)
+    expansion = PlanStep(
+        step_order=1,
+        step_goal=f"Revised evidence sweep (rev {revision}): {failure_reason[:120]}",
+        assigned_agent="evidence_agent",
+        required_tools=list(SEVEN_EVIDENCE_TOOLS),
+        success_criteria="Seven canonical query tools re-executed",
+    )
+    steps: list[PlanStep] = [expansion]
+    order = 2
+    for step in base.steps:
+        if step.assigned_agent == "evidence_agent":
+            continue
+        steps.append(
+            PlanStep(
+                step_order=order,
+                step_goal=step.step_goal,
+                assigned_agent=step.assigned_agent,
+                required_tools=list(step.required_tools),
+                success_criteria=step.success_criteria,
+            )
+        )
+        order += 1
+    return ExecutionPlan(
+        plan_id=plan_id,
+        event_id=event_id,
+        steps=steps,
+        budget=PlanBudget(),
+        revision=revision,
+        revise_reason=failure_reason,
+        degraded=True,
+    )
 
 
 __all__ = [
     "DEFAULT_PLANS",
+    "MIN_PLAN_STEPS",
+    "SEVEN_EVIDENCE_TOOLS",
     "get_default_plan",
+    "get_revised_default_plan",
 ]

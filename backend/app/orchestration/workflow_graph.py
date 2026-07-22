@@ -17,6 +17,20 @@ from app.models.enums import EventType, Severity
 logger = logging.getLogger(__name__)
 
 
+def _synthesized_fallback_triage(
+    event_context: EventContext,
+    *,
+    reasoning: str,
+) -> TriageResult:
+    return TriageResult(
+        event_type=EventType.OTHER,
+        severity=event_context.event.severity if event_context.event else Severity.MEDIUM,
+        need_investigation=True,
+        reasoning=reasoning,
+        degraded=True,
+    )
+
+
 async def planner_node(
     event_context: EventContext,
     planner: PlannerAgent,
@@ -49,41 +63,34 @@ async def planner_node(
         )
         return await planner.plan_disposition_only(event_context)
 
-    # Build input from event_context
     triage_data = event_context.triage_result
     triage_result: TriageResult | None = None
-    triage_corrupt: bool = False
     if triage_data is not None:
         try:
             triage_result = TriageResult.model_validate(triage_data)
         except Exception:
-            triage_corrupt = True
             logger.warning(
                 "planner_node: corrupt triage_result in EventContext for event=%s, "
                 "falling back to DEFAULT_PLANS (EventType.OTHER)",
                 event_id,
                 exc_info=True,
             )
-
-    # Corrupt triage → synthesize a minimal triage so the normal plan path
-    # can still run (LLM → DEFAULT_PLANS fallback).  We must NOT silently
-    # switch to disposition-only here because the event *did* go through
-    # triage — skipping evidence/risk/response would risk incorrect closure.
-    if triage_corrupt:
-        triage_result = TriageResult(
-            event_type=EventType.OTHER,
-            severity=event_context.event.severity if event_context.event else Severity.MEDIUM,
-            need_investigation=True,
-            reasoning="triage data corrupt — using conservative rule-based plan",
-            degraded=True,
-        )
+            triage_result = _synthesized_fallback_triage(
+                event_context,
+                reasoning="triage data corrupt — using conservative rule-based plan",
+            )
+    else:
         logger.warning(
-            "planner_node: synthesised fallback triage for event=%s (original corrupt)",
+            "planner_node: missing triage_result for event=%s, "
+            "using conservative DEFAULT_PLANS path",
             event_id,
         )
+        triage_result = _synthesized_fallback_triage(
+            event_context,
+            reasoning="triage unavailable — using conservative rule-based plan",
+        )
 
-    # Check for replan: replan_count > 0 means we need a revision
-    if event_context.replan_count > 0 and triage_result is not None:
+    if event_context.replan_count > 0:
         existing_plan_data = event_context.execution_plan
         if existing_plan_data is not None:
             try:
@@ -106,7 +113,6 @@ async def planner_node(
                     exc_info=True,
                 )
 
-    # Normal plan path
     input = PlannerAgentInput(
         event_id=event_id,
         triage_result=triage_result,

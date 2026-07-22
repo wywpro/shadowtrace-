@@ -158,8 +158,8 @@ async def test_planner_node_disposition_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_planner_node_no_triage_disposition_only() -> None:
-    """No triage_result in input -> disposition-only path."""
+async def test_planner_node_no_triage_uses_default_plan() -> None:
+    """No triage_result in input -> conservative DEFAULT_PLANS path."""
     planner = PlannerAgent()
     ctx = EventContext(
         event=_make_event_summary("evt-no-triage-node"),
@@ -167,8 +167,9 @@ async def test_planner_node_no_triage_disposition_only() -> None:
     )
 
     plan = await planner_node(ctx, planner)
-    assert len(plan.steps) == 1
-    assert plan.steps[0].assigned_agent == "response_agent"
+    assert len(plan.steps) >= 4
+    assert plan.degraded is True
+    assert plan.steps[0].assigned_agent == "evidence_agent"
 
 
 # --------------------------------------------------------------------------- #

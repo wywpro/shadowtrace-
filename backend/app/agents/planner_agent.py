@@ -20,13 +20,19 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from typing import Any
 
 from app.agents.base import BaseAgent
+from app.agents.evidence_agent import EVIDENCE_QUERY_ORDER
 from app.agents.prompts.planner_prompt import (
     build_plan_generate_messages,
     build_plan_revise_messages,
 )
-from app.agents.rules.default_plans import get_default_plan
+from app.agents.rules.default_plans import (
+    MIN_PLAN_STEPS,
+    get_default_plan,
+    get_revised_default_plan,
+)
 from app.core.llm.base import LLMMessage
 from app.models.agent_io import (
     AGENT_INPUT_BY_NAME as _AGENT_INPUT_BY_NAME,
@@ -39,43 +45,17 @@ from app.models.agent_io import (
     TriageResult,
 )
 from app.models.context import EventContext
-from app.models.enums import EventType
+from app.models.enums import EventType, Severity
 
 logger = logging.getLogger(__name__)
 
-# Valid agent names for assigned_agent validation
 _VALID_AGENT_NAMES: frozenset[str] = frozenset(_AGENT_INPUT_BY_NAME.keys())
 
-# Valid tool names per agent (canonical list from ISSUE-049 / planner_prompt).
-# Agents NOT listed here (risk_agent, response_agent, graph_agent, etc.) have
-# no PlannerAgent-level tool restrictions — their tools are validated by the
-# respective agent implementations.  ``update_source_event_disposition`` is a
-# disposition-only deferred Action owned by ``EventDispositionService``, never
-# routed through ToolProvider; it is intentionally absent from this registry.
+# evidence_agent tools must match EVIDENCE_QUERY_ORDER / QUERY_TOOL_METAS.
+# rag_agent uses RetrievalPipeline (no ToolProvider tools).
 _VALID_TOOLS: dict[str, frozenset[str]] = {
-    "evidence_agent": frozenset(
-        {
-            "query_threat_intel",
-            "query_dns",
-            "query_whois",
-            "query_passive_dns",
-            "query_process_tree",
-            "query_network_connections",
-            "query_file_events",
-            "query_login_history",
-            "query_account_activity",
-            "query_data_access_logs",
-            "query_dlp_events",
-            "query_lateral_movement",
-            "query_privilege_changes",
-        }
-    ),
-    "rag_agent": frozenset(
-        {
-            "search_kb",
-            "match_techniques",
-        }
-    ),
+    "evidence_agent": frozenset(EVIDENCE_QUERY_ORDER),
+    "rag_agent": frozenset(),
 }
 
 
@@ -92,12 +72,18 @@ def _generate_disposition_only_plan_id(event_id: str) -> str:
     return f"pln-{digest}"
 
 
-def _build_disposition_only_plan(event_id: str) -> ExecutionPlan:
-    """Deterministic single-step plan for disposition-only workflows.
+def _conservative_fallback_triage(*, reasoning: str) -> TriageResult:
+    return TriageResult(
+        event_type=EventType.OTHER,
+        severity=Severity.MEDIUM,
+        need_investigation=True,
+        reasoning=reasoning,
+        degraded=True,
+    )
 
-    Centralised here so ``plan_disposition_only`` and the ``_run``
-    disposition-only branch share one definition (Should-Fix #1).
-    """
+
+def _build_disposition_only_plan(event_id: str) -> ExecutionPlan:
+    """Deterministic single-step plan for disposition-only workflows."""
     plan_id = _generate_disposition_only_plan_id(event_id)
     step = PlanStep(
         step_order=1,
@@ -117,13 +103,7 @@ def _build_disposition_only_plan(event_id: str) -> ExecutionPlan:
 
 
 def _validate_plan_step(step: PlanStep) -> PlanStep | None:
-    """Validate and sanitize a single PlanStep.
-
-    - assigned_agent must be a valid AgentName → otherwise the step is
-      **dropped** (returns ``None``).
-    - required_tools must be valid for that agent → invalid tools stripped
-      (logged).
-    """
+    """Validate and sanitize a single PlanStep."""
     if step.assigned_agent not in _VALID_AGENT_NAMES:
         logger.warning(
             "PlannerAgent: dropping step with invalid assigned_agent=%r",
@@ -133,8 +113,6 @@ def _validate_plan_step(step: PlanStep) -> PlanStep | None:
 
     valid_tools = _VALID_TOOLS.get(step.assigned_agent)
     if valid_tools is None:
-        # Agent has no PlannerAgent-level tool restrictions
-        # (risk_agent, response_agent, graph_agent, …).
         return step
 
     clean_tools = [t for t in step.required_tools if t in valid_tools]
@@ -146,7 +124,6 @@ def _validate_plan_step(step: PlanStep) -> PlanStep | None:
             step.step_order,
             step.assigned_agent,
         )
-    # Re-numbering is not done here — caller is responsible for that.
     return PlanStep(
         step_order=step.step_order,
         step_goal=step.step_goal,
@@ -160,7 +137,6 @@ def _validate_execution_plan(plan: ExecutionPlan) -> ExecutionPlan:
     """Validate every step, dropping invalid ones and re-numbering survivors."""
     raw_steps = (_validate_plan_step(s) for s in plan.steps)
     clean_steps = [s for s in raw_steps if s is not None]
-    # Re-number so step_order stays contiguous
     for idx, s in enumerate(clean_steps, start=1):
         if s.step_order != idx:
             clean_steps[idx - 1] = PlanStep(
@@ -181,32 +157,58 @@ def _validate_execution_plan(plan: ExecutionPlan) -> ExecutionPlan:
     )
 
 
+def _ensure_min_steps(plan: ExecutionPlan) -> ExecutionPlan:
+    if len(plan.steps) < MIN_PLAN_STEPS:
+        raise ValueError(
+            f"ExecutionPlan has {len(plan.steps)} steps after validation; "
+            f"minimum is {MIN_PLAN_STEPS}"
+        )
+    return plan
+
+
 class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
     """Generates structured investigation plans from triage results."""
 
     agent_name: str = "planner_agent"
 
-    # ------------------------------------------------------------------ #
-    # Public API (called by orchestration, not BaseAgent.execute)
-    # ------------------------------------------------------------------ #
+    def __init__(
+        self,
+        *,
+        llm_client: Any | None = None,
+        tool_executor: Any | None = None,
+        working_memory: Any | None = None,
+        budget_service: Any | None = None,
+        output_guard: Any | None = None,
+        trace_service: Any | None = None,
+        audit_service: Any | None = None,
+        event_bus: Any | None = None,
+        rag_enabled: bool = False,
+    ) -> None:
+        super().__init__(
+            llm_client=llm_client,
+            tool_executor=tool_executor,
+            working_memory=working_memory,
+            budget_service=budget_service,
+            output_guard=output_guard,
+            trace_service=trace_service,
+            audit_service=audit_service,
+            event_bus=event_bus,
+        )
+        self._rag_enabled = rag_enabled
 
     async def plan(self, event_context: EventContext) -> ExecutionPlan:
-        """Generate an investigation plan via LLM (or rule fallback).
-
-        When ``triage_result`` is unavailable in working memory this falls
-        back to a disposition-only plan instead of crashing (see Blocker fix).
-        """
+        """Generate an investigation plan via LLM (or rule fallback)."""
         ec_event_id = event_context.event.event_id if event_context.event else "unknown"
         triage = await self._read_triage_result(event_context)
         if triage is None:
             logger.warning(
                 "PlannerAgent.plan: triage_result unavailable for event=%s, "
-                "falling back to disposition-only plan",
+                "using conservative DEFAULT_PLANS",
                 ec_event_id,
             )
-            plan = _build_disposition_only_plan(ec_event_id)
-            await self._persist_plan(ec_event_id, plan)
-            return plan
+            triage = _conservative_fallback_triage(
+                reasoning="triage unavailable — using conservative rule-based plan",
+            )
         return await self._plan_impl(ec_event_id, triage)
 
     async def plan_disposition_only(self, event_context: EventContext) -> ExecutionPlan:
@@ -226,14 +228,9 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
         event_id = event_context.event.event_id if event_context.event else "unknown"
         return await self._revise_impl(event_id, failure_reason, previous_plan)
 
-    # ------------------------------------------------------------------ #
-    # BaseAgent._run — dispatcher
-    # ------------------------------------------------------------------ #
-
     async def _run(self, input: PlannerAgentInput) -> ExecutionPlan:
         event_id = input.event_id
 
-        # Revise path: previous_plan + revise_reason both present
         if input.previous_plan is not None and input.revise_reason is not None:
             return await self._revise_impl(
                 event_id,
@@ -241,18 +238,13 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
                 input.previous_plan,
             )
 
-        # Disposition-only path: no triage_result
-        if input.triage_result is None:
-            plan = _build_disposition_only_plan(event_id)
-            await self._persist_plan(event_id, plan)
-            return plan
+        triage_result = input.triage_result
+        if triage_result is None:
+            triage_result = _conservative_fallback_triage(
+                reasoning="missing triage — using conservative rule-based plan",
+            )
 
-        # Normal plan path
-        return await self._plan_impl(event_id, input.triage_result)
-
-    # ------------------------------------------------------------------ #
-    # Internal implementation
-    # ------------------------------------------------------------------ #
+        return await self._plan_impl(event_id, triage_result)
 
     async def _plan_impl(
         self,
@@ -260,8 +252,6 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
         triage_result: TriageResult,
     ) -> ExecutionPlan:
         """Core plan generation: try LLM, fall back to DEFAULT_PLANS."""
-
-        # Idempotency check: replay should not re-call LLM
         existing = await self._read_existing_plan(event_id, revision=0)
         if existing is not None:
             logger.info(
@@ -271,7 +261,6 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
             )
             return existing
 
-        # Try LLM
         if self.llm_client is not None:
             try:
                 plan = await self._llm_plan(event_id, triage_result)
@@ -296,8 +285,12 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
                     exc_info=True,
                 )
 
-        # Rule fallback
-        plan = get_default_plan(event_id, triage_result.event_type, _generate_plan_id(event_id, 0))
+        plan = get_default_plan(
+            event_id,
+            triage_result.event_type,
+            _generate_plan_id(event_id, 0),
+            rag_enabled=self._rag_enabled,
+        )
         logger.info(
             "PlannerAgent: using DEFAULT_PLANS for event=%s type=%s",
             event_id,
@@ -315,7 +308,6 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
         """Core plan revision: try LLM, fall back to rule-based revision."""
         new_revision = previous_plan.revision + 1
 
-        # Idempotency check
         existing = await self._read_existing_plan(event_id, revision=new_revision)
         if existing is not None:
             logger.info(
@@ -326,7 +318,6 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
             )
             return existing
 
-        # Try LLM revision
         if self.llm_client is not None:
             try:
                 plan = await self._llm_revise(
@@ -355,29 +346,18 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
                     exc_info=True,
                 )
 
-        # Rule-based revision: rebuild from DEFAULT_PLANS with incremented revision
         triage = await self._read_triage_from_memory(event_id)
         event_type = triage.event_type if triage else EventType.OTHER
-        plan = get_default_plan(
+        plan = get_revised_default_plan(
             event_id,
             event_type,
             _generate_plan_id(event_id, new_revision),
-        )
-        plan = ExecutionPlan(
-            plan_id=plan.plan_id,
-            event_id=plan.event_id,
-            steps=plan.steps,
-            budget=plan.budget,
-            revision=new_revision,
-            revise_reason=failure_reason,
-            degraded=True,
+            new_revision,
+            failure_reason,
+            rag_enabled=self._rag_enabled,
         )
         await self._persist_plan(event_id, plan)
         return plan
-
-    # ------------------------------------------------------------------ #
-    # LLM helpers
-    # ------------------------------------------------------------------ #
 
     async def _llm_plan(
         self,
@@ -405,11 +385,8 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
         else:
             raise ValueError("LLM did not return a valid ExecutionPlan")
 
-        # Enforce plan_id format and event_id
         plan = ExecutionPlan(
-            plan_id=(
-                plan.plan_id if plan.plan_id.startswith("pln-") else _generate_plan_id(event_id, 0)
-            ),
+            plan_id=_generate_plan_id(event_id, 0),
             event_id=event_id,
             steps=plan.steps,
             budget=plan.budget if isinstance(plan.budget, PlanBudget) else PlanBudget(),
@@ -418,7 +395,7 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
             degraded=bool(response.degraded_reason),
         )
 
-        plan = _validate_execution_plan(plan)
+        plan = _ensure_min_steps(_validate_execution_plan(plan))
         return plan
 
     async def _llm_revise(
@@ -427,13 +404,7 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
         failure_reason: str,
         previous_plan: ExecutionPlan,
     ) -> ExecutionPlan:
-        """Call LLM to revise an existing plan.
-
-        The LLM is instructed to return the **same** ``plan_id`` as the
-        previous plan, but we do not trust it: ``plan_id`` is **forced** to
-        ``previous_plan.plan_id`` regardless of what the model returns
-        (Should-Fix #4).
-        """
+        """Call LLM to revise an existing plan."""
         msgs_raw = build_plan_revise_messages(event_id, failure_reason, previous_plan)
         messages = [
             LLMMessage(role=m["role"], content=m["content"])  # type: ignore[arg-type]
@@ -465,12 +436,8 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
             degraded=bool(response.degraded_reason),
         )
 
-        plan = _validate_execution_plan(plan)
+        plan = _ensure_min_steps(_validate_execution_plan(plan))
         return plan
-
-    # ------------------------------------------------------------------ #
-    # Working memory helpers
-    # ------------------------------------------------------------------ #
 
     async def _read_triage_result(self, event_context: EventContext) -> TriageResult | None:
         """Read triage_result from working memory if available."""
@@ -514,19 +481,14 @@ class PlannerAgent(BaseAgent[PlannerAgentInput, ExecutionPlan]):
             data = await self.working_memory.read(event_id, "execution_plan")
             if data is not None and isinstance(data, dict):
                 plan = ExecutionPlan.model_validate(data)
-                if plan.revision == revision:
+                if plan.event_id == event_id and plan.revision == revision:
                     return plan
         except Exception:
             logger.debug("PlannerAgent: failed to read execution_plan", exc_info=True)
         return None
 
     async def _persist_plan(self, event_id: str, plan: ExecutionPlan) -> bool:
-        """Write the plan to EventContext.execution_plan via working memory.
-
-        Returns ``True`` on success, ``False`` when persistence was skipped
-        or failed.  Callers should treat a ``False`` return as a signal to
-        mark the plan ``degraded=True`` (Should-Fix #2).
-        """
+        """Write the plan to EventContext.execution_plan via working memory."""
         if self.working_memory is None:
             logger.warning(
                 "PlannerAgent: no working_memory bound, plan not persisted for event=%s",

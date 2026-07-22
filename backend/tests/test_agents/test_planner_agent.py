@@ -142,13 +142,14 @@ async def test_plan_disposition_only_stable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_disposition_only_when_no_triage() -> None:
+async def test_run_uses_default_plan_when_no_triage() -> None:
     agent = PlannerAgent()
     inp = PlannerAgentInput(event_id="evt-no-triage")
     plan = await agent._run(inp)
     assert plan.revision == 0
-    assert len(plan.steps) == 1
-    assert plan.steps[0].assigned_agent == "response_agent"
+    assert plan.degraded is True
+    assert len(plan.steps) >= 4
+    assert plan.steps[0].assigned_agent == "evidence_agent"
 
 
 # --------------------------------------------------------------------------- #
@@ -178,14 +179,14 @@ async def test_plan_with_mock_llm(tmp_path: Path) -> None:
                         "step_order": 2,
                         "step_goal": "Collect process evidence",
                         "assigned_agent": "evidence_agent",
-                        "required_tools": ["query_process_tree"],
+                        "required_tools": ["query_edr_process"],
                         "success_criteria": "process tree obtained",
                     },
                     {
                         "step_order": 3,
                         "step_goal": "Network evidence",
                         "assigned_agent": "evidence_agent",
-                        "required_tools": ["query_network_connections"],
+                        "required_tools": ["query_network_flow"],
                         "success_criteria": "connections logged",
                     },
                     {
@@ -264,14 +265,14 @@ async def test_revise_with_mock_llm(tmp_path: Path) -> None:
                         "step_order": 1,
                         "step_goal": "[revised] Query threat intel expanded",
                         "assigned_agent": "evidence_agent",
-                        "required_tools": ["query_threat_intel", "query_dns", "query_whois"],
+                        "required_tools": ["query_threat_intel", "query_dns", "query_asset_info"],
                         "success_criteria": "expanded IOC data",
                     },
                     {
                         "step_order": 2,
                         "step_goal": "[revised] Process + network evidence",
                         "assigned_agent": "evidence_agent",
-                        "required_tools": ["query_process_tree", "query_network_connections"],
+                        "required_tools": ["query_edr_process", "query_network_flow"],
                         "success_criteria": "full endpoint data",
                     },
                     {
@@ -600,11 +601,10 @@ async def test_plan_idempotent_via_working_memory(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_plan_public_api_without_triage() -> None:
-    """plan() should fall back to disposition-only when triage is missing."""
+    """plan() uses conservative DEFAULT_PLANS when triage is missing."""
     from app.services.working_memory import BoundWorkingMemory
 
     wm = MagicMock(spec=BoundWorkingMemory)
-    # working_memory returns None for triage_result
     wm.read = AsyncMock(return_value=None)
 
     agent = PlannerAgent(working_memory=wm)
@@ -612,10 +612,10 @@ async def test_plan_public_api_without_triage() -> None:
     ctx.event.event_id = "evt-plan-no-triage"
 
     plan = await agent.plan(ctx)
-    # Must not crash with AttributeError; should return a valid plan
     assert plan.event_id == "evt-plan-no-triage"
-    assert len(plan.steps) == 1
-    assert plan.steps[0].assigned_agent == "response_agent"
+    assert len(plan.steps) >= 4
+    assert plan.degraded is True
+    assert plan.steps[0].assigned_agent == "evidence_agent"
 
 
 # --------------------------------------------------------------------------- #
@@ -691,7 +691,7 @@ async def test_persist_failure_marks_degraded(tmp_path: Path) -> None:
     plan = await agent._run(inp)
 
     # LLM succeeded but persist failed → plan returned with degraded=True
-    assert plan.plan_id == "pln-pfail001"
+    assert plan.plan_id == _generate_plan_id("evt-persist-fail", 0)
     assert plan.degraded is True
     assert len(plan.steps) >= 4
 
@@ -743,3 +743,97 @@ def test_validate_execution_plan_drops_invalid_agent_steps() -> None:
     assert clean.steps[0].assigned_agent == "evidence_agent"
     assert clean.steps[1].step_order == 2
     assert clean.steps[1].assigned_agent == "risk_agent"
+
+
+def test_planner_required_tools_registered_in_tool_specs() -> None:
+    from app.agents.evidence_agent import EVIDENCE_QUERY_ORDER
+    from app.agents.rules.default_plans import DEFAULT_PLANS
+    from app.tools.specs.query import QUERY_TOOL_METAS
+
+    registered = {m.tool_name for m in QUERY_TOOL_METAS}
+    for builder in DEFAULT_PLANS.values():
+        plan = builder("evt-tool-check", "pln-toolchk", False)
+        for step in plan.steps:
+            if step.assigned_agent != "evidence_agent":
+                continue
+            for tool in step.required_tools:
+                assert tool in registered
+                assert tool in EVIDENCE_QUERY_ORDER
+
+
+def test_default_plan_omits_rag_when_disabled() -> None:
+    from app.agents.rules.default_plans import get_default_plan
+
+    plan = get_default_plan(
+        "evt-no-rag",
+        EventType.DATA_EXFILTRATION,
+        "pln-norag01",
+        rag_enabled=False,
+    )
+    assert not any(s.assigned_agent == "rag_agent" for s in plan.steps)
+
+
+def test_default_plan_includes_rag_when_enabled() -> None:
+    from app.agents.rules.default_plans import get_default_plan
+
+    plan = get_default_plan(
+        "evt-rag",
+        EventType.DATA_EXFILTRATION,
+        "pln-rag01",
+        rag_enabled=True,
+    )
+    assert any(s.assigned_agent == "rag_agent" for s in plan.steps)
+
+
+@pytest.mark.asyncio
+async def test_revise_llm_failure_steps_differ_from_previous_default() -> None:
+    from app.agents.rules.default_plans import get_default_plan
+
+    agent = PlannerAgent(llm_client=None)
+    previous = get_default_plan(
+        "evt-rev-fallback",
+        EventType.DATA_EXFILTRATION,
+        _generate_plan_id("evt-rev-fallback", 0),
+    )
+    inp = PlannerAgentInput(
+        event_id="evt-rev-fallback",
+        triage_result=_make_triage(),
+        previous_plan=previous,
+        revise_reason="evidence collection incomplete",
+    )
+    plan = await agent._run(inp)
+    assert plan.revision == 1
+    assert {s.step_goal for s in plan.steps} != {s.step_goal for s in previous.steps}
+
+
+@pytest.mark.asyncio
+async def test_idempotency_ignores_mismatched_event_id() -> None:
+    from app.services.working_memory import BoundWorkingMemory
+
+    wm = MagicMock(spec=BoundWorkingMemory)
+    wrong_event_plan = ExecutionPlan(
+        plan_id="pln-wrong001",
+        event_id="evt-other",
+        steps=[
+            PlanStep(
+                step_order=1,
+                step_goal="cached",
+                assigned_agent="evidence_agent",
+                required_tools=["query_threat_intel"],
+                success_criteria="ok",
+            ),
+        ],
+        budget=PlanBudget(),
+        revision=0,
+    )
+    wm.read = AsyncMock(return_value=wrong_event_plan.model_dump(mode="json"))
+
+    agent = PlannerAgent(llm_client=None, working_memory=wm)
+    plan = await agent._run(
+        PlannerAgentInput(
+            event_id="evt-idem-mismatch",
+            triage_result=_make_triage(EventType.OTHER),
+        )
+    )
+    assert plan.event_id == "evt-idem-mismatch"
+    assert plan.plan_id != wrong_event_plan.plan_id

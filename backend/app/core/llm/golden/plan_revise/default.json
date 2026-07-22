@@ -1,42 +1,35 @@
 {
   "content": {
-    "plan_id": "pln-a1b2c3d4",
-    "event_id": "evt-20260101-0a1b2c3d",
+    "plan_id": "pln-prev0001",
+    "event_id": "evt-test-revise",
     "steps": [
       {
         "step_order": 1,
-        "step_goal": "[修订] 重新收集威胁情报：扩大IOC查询范围",
+        "step_goal": "[revised] Expanded threat intel and DNS",
         "assigned_agent": "evidence_agent",
-        "required_tools": ["query_threat_intel", "query_dns", "query_whois", "query_passive_dns"],
-        "success_criteria": "获取至少3条IOC的外部情报数据"
+        "required_tools": ["query_threat_intel", "query_dns", "query_asset_info"],
+        "success_criteria": "expanded IOC data"
       },
       {
         "step_order": 2,
-        "step_goal": "[修订] 采集终端与网络证据：增加横向移动检测",
+        "step_goal": "[revised] Process and network evidence",
         "assigned_agent": "evidence_agent",
-        "required_tools": ["query_process_tree", "query_network_connections", "query_lateral_movement"],
-        "success_criteria": "获取进程树、网络连接和横向移动记录"
+        "required_tools": ["query_edr_process", "query_network_flow"],
+        "success_criteria": "full endpoint data"
       },
       {
         "step_order": 3,
-        "step_goal": "[修订] 采集身份与访问证据：增加权限变更记录",
-        "assigned_agent": "evidence_agent",
-        "required_tools": ["query_login_history", "query_account_activity", "query_privilege_changes"],
-        "success_criteria": "获取账号登录、活动和权限变更记录"
+        "step_goal": "Risk scoring",
+        "assigned_agent": "risk_agent",
+        "required_tools": [],
+        "success_criteria": "score computed"
       },
       {
         "step_order": 4,
-        "step_goal": "综合风险评估：基于扩展证据重新计算风险",
-        "assigned_agent": "risk_agent",
-        "required_tools": [],
-        "success_criteria": "产出更新后的risk_score"
-      },
-      {
-        "step_order": 5,
-        "step_goal": "生成修订处置方案",
+        "step_goal": "Response plan",
         "assigned_agent": "response_agent",
         "required_tools": [],
-        "success_criteria": "产出至少1个处置Action"
+        "success_criteria": "actions generated"
       }
     ],
     "budget": {
@@ -45,11 +38,11 @@
       "max_duration_s": 300
     },
     "revision": 1,
-    "revise_reason": "前一轮未收集到足够证据：IOC情报不足、缺少横向移动检测",
+    "revise_reason": "Insufficient threat intel in previous round",
     "degraded": false
   },
   "model_name": "mock-model",
-  "prompt_tokens": 200,
-  "completion_tokens": 350,
-  "total_tokens": 550
+  "prompt_tokens": 150,
+  "completion_tokens": 250,
+  "total_tokens": 400
 }

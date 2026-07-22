@@ -4,37 +4,37 @@ from __future__ import annotations
 
 import json
 
+from app.agents.evidence_agent import EVIDENCE_QUERY_ORDER
 from app.models.agent_io import ExecutionPlan, TriageResult
+
+_CANONICAL_EVIDENCE_TOOLS = ", ".join(EVIDENCE_QUERY_ORDER)
 
 # --------------------------------------------------------------------------- #
 # Plan generation prompt
 # --------------------------------------------------------------------------- #
 
-PLAN_GENERATE_SYSTEM = """\
+PLAN_GENERATE_SYSTEM = f"""\
 You are a security investigation planner. Given a triage result, produce a structured
 investigation plan as JSON. The plan must include concrete steps, each assigned to a
 specific agent and listing required tools by their canonical names.
 
 Available agents and the tools they can use:
 
-- evidence_agent: query_threat_intel, query_dns, query_whois, query_passive_dns,
-  query_process_tree, query_network_connections, query_file_events,
-  query_login_history, query_account_activity, query_data_access_logs,
-  query_dlp_events, query_lateral_movement, query_privilege_changes
+- evidence_agent: {_CANONICAL_EVIDENCE_TOOLS}
 
 - risk_agent: (no tools — uses evidence output directly)
 
 - response_agent: (no tools — generates disposition plan)
 
-- rag_agent: search_kb, match_techniques (only if P1 RAG enabled)
+- rag_agent: (no tools — uses RetrievalPipeline; only if P1 RAG enabled)
 
 - graph_agent: (no tools — uses evidence output directly)
 
 Output a JSON object with these fields:
-- plan_id: "pln-{8 hex chars}" (generate a random 8-char hex)
+- plan_id: "pln-{{8 hex chars}}" (generate a random 8-char hex)
 - event_id: the event_id from the input
-- steps: list of { step_order, step_goal, assigned_agent, required_tools, success_criteria }
-- budget: { max_tool_calls: 30, max_llm_calls: 20, max_duration_s: 300 }
+- steps: list of {{ step_order, step_goal, assigned_agent, required_tools, success_criteria }}
+- budget: {{ max_tool_calls: 30, max_llm_calls: 20, max_duration_s: 300 }}
 - revision: 0
 - revise_reason: null
 - degraded: false
@@ -46,7 +46,7 @@ Rules:
 4. Only include rag_agent or graph_agent steps if the triage event_type strongly suggests
    ATT&CK mapping (e.g. malicious_process, lateral_movement) or entity relationship analysis.
 5. Every step must have assigned_agent set to one of the valid agent names listed above.
-6. Every tool in required_tools must be from the canonical list for that agent.
+6. Every tool in required_tools must be from the canonical evidence_agent list above.
 7. Plan must have at least 4 steps.
 """
 
@@ -101,7 +101,7 @@ Rules:
 1. Keep steps that produced useful results; replace or augment those that failed.
 2. Add more specific tools or broader evidence collection as needed.
 3. The new plan must have steps that are NOT identical to the previous plan.
-4. Every assigned_agent and required_tool must be valid.
+4. When assigned_agent is evidence_agent, required_tools must use canonical query tool names.
 """
 
 PLAN_REVISE_USER = """\
