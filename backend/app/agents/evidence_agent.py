@@ -761,9 +761,7 @@ class EvidenceAgent(BaseAgent[EvidenceAgentInput, EvidenceOutput]):
         dirty = [item for item in evidence_list if item.is_conflicting]
         if not dirty:
             if conflicts:
-                logger.warning(
-                    "conflicts present but no penalized evidence rows; skipping DB sync"
-                )
+                logger.warning("conflicts present but no penalized evidence rows; skipping DB sync")
             return
         try:
             await self.evidence_repository.apply_conflict_updates(dirty)
