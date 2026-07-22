@@ -1,6 +1,8 @@
-"""Agents package (ISSUE-005)."""
+"""Agents package (ISSUE-005 / ISSUE-033)."""
 
 from app.agents.base import AgentOutput, BaseAgent
+from app.agents.evidence_agent import EvidenceAgent
+from app.agents.evidence_parser import EvidenceParser
 from app.models.agent_io import (
     AGENT_INPUT_MODELS,
     AgentInput,
@@ -23,7 +25,9 @@ __all__ = [
     "AgentInput",
     "AgentOutput",
     "BaseAgent",
+    "EvidenceAgent",
     "EvidenceAgentInput",
+    "EvidenceParser",
     "GraphAgentInput",
     "MemoryAgentInput",
     "PlannerAgentInput",
