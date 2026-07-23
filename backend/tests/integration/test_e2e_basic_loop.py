@@ -211,9 +211,7 @@ async def _assert_observability(
             )
         ).all()
     assert audit_rows, "event_audit_log must record lifecycle transitions"
-    status_transitions = [
-        row.to_status for row in audit_rows if row.to_status is not None
-    ]
+    status_transitions = [row.to_status for row in audit_rows if row.to_status is not None]
     assert status_transitions, "event_audit_log must include status transitions"
 
     budget_usage = await context_store.get(event_id, "budget_usage")
@@ -238,9 +236,7 @@ async def _assert_report_persisted(
     section_count: int = 15,
 ) -> None:
     async with session_factory() as session:
-        row = await session.scalar(
-            select(orm.Report).where(orm.Report.event_id == event_id)
-        )
+        row = await session.scalar(select(orm.Report).where(orm.Report.event_id == event_id))
     assert row is not None, "report table row must exist"
     assert len(row.sections) == section_count
     assert [section["key"] for section in row.sections] == list(SECTION_KEYS)
