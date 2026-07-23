@@ -37,6 +37,38 @@ logger = logging.getLogger(__name__)
 _PIPELINE_OPERATOR = "AnalysisOnlyPipeline"
 
 
+async def _read_persisted_final_verdict(
+    event_service: Any | None,
+    event_id: str,
+) -> FinalVerdict:
+    """Read verdict persisted by RiskAgent via ``EventService.set_final_verdict``."""
+    if event_service is None:
+        return FinalVerdict.NONE
+    get_event = getattr(event_service, "get_event", None)
+    if get_event is None:
+        return FinalVerdict.NONE
+    try:
+        event = await get_event(event_id)
+    except Exception:
+        logger.debug(
+            "failed to read persisted final_verdict for event=%s",
+            event_id,
+            exc_info=True,
+        )
+        return FinalVerdict.NONE
+    if event is None:
+        return FinalVerdict.NONE
+    verdict = getattr(event, "final_verdict", None)
+    if isinstance(verdict, FinalVerdict):
+        return verdict
+    if isinstance(verdict, str):
+        try:
+            return FinalVerdict(verdict)
+        except ValueError:
+            return FinalVerdict.NONE
+    return FinalVerdict.NONE
+
+
 class _AgentProtocol(Protocol):
     async def execute(self, input: Any) -> Any: ...
 
@@ -156,6 +188,9 @@ class AnalysisOnlyPipeline:
             raise TypeError("TriageAgent must return TriageResult")
 
         if not triage_result.need_investigation:
+            # ISSUE-038 owns need_investigation=false short-circuit: 15-section
+            # low-risk fast-close report + optional TRIAGING→CLOSED when
+            # disposition_policy=not_required.
             raise NotImplementedError(
                 "need_investigation=false short-circuit is owned by ISSUE-038; "
                 "use disposition_policy=not_required fixtures there"
@@ -192,9 +227,7 @@ class AnalysisOnlyPipeline:
         if not isinstance(risk_assessment, RiskAssessment):
             raise TypeError("RiskAgent must return RiskAssessment")
 
-        final_verdict = getattr(self.risk_agent, "last_verdict", None)
-        if not isinstance(final_verdict, FinalVerdict):
-            final_verdict = FinalVerdict.NONE
+        final_verdict = await _read_persisted_final_verdict(self.event_service, event_id)
 
         await self._transition(event_id, EventStatus.REPORTING)
         report = await self.report_agent.execute(
