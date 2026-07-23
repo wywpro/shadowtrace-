@@ -1241,14 +1241,10 @@ async def test_upsert_report_idempotent_by_report_id(
 
     async with session_factory() as session:
         rows = (
-            (
-                await session.execute(
-                    select(orm.Report).where(orm.Report.event_id == created.event_id)
-                )
+            await session.execute(
+                select(orm.Report).where(orm.Report.event_id == created.event_id)
             )
-            .scalars()
-            .all()
-        )
+        ).scalars().all()
         assert len(rows) == 1
 
 

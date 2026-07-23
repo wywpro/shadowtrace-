@@ -304,26 +304,32 @@ async def test_attack_path_time_monotonic() -> None:
 
 async def test_attack_path_account_to_ip_chain() -> None:
     """At least one attack path contains an account→ip adjacency."""
-    evidence_list = _main_scenario_evidence()
-    nodes, edges = GraphBuilder.build(evidence_list)
-
-    paths = _find_attack_paths(nodes, edges, max_depth=6, max_paths=3)
-    assert len(paths) >= 1
-
-    node_entities: dict[str, tuple[str, str]] = {}
-    for n in nodes:
-        node_entities[n.node_id] = (n.entity_type, n.entity_value)
-
-    # Verify that an account→ip edge exists in the graph (it may not appear
-    # in the top-3 longest attack paths due to length-based filtering).
-    account_to_ip_edges = [
-        e
-        for e in edges
-        if node_entities.get(e.source_node_id, ("", ""))[0] == "account"
-        and node_entities.get(e.target_node_id, ("", ""))[0] == "ip"
+    event_id = f"evt-acct-ip-{_new_sfx()}"
+    base = datetime(2024, 6, 15, 9, 0, 0, tzinfo=UTC)
+    evidence_list = [
+        _make_evidence(
+            source=EvidenceSource.IDENTITY,
+            evidence_type="login",
+            timestamp=base,
+            event_id=event_id,
+            related_entities=["zhangsan", "10.20.30.23"],
+        ),
     ]
-    assert len(account_to_ip_edges) >= 1, (
-        f"No account→ip edges in graph. Node entities: {node_entities}"
+    nodes, edges = GraphBuilder.build(evidence_list)
+    paths = _find_attack_paths(nodes, edges, max_depth=6, max_paths=3)
+
+    node_entities = {n.node_id: (n.entity_type, n.entity_value) for n in nodes}
+
+    def path_has_account_to_ip(path: list[str]) -> bool:
+        for i in range(len(path) - 1):
+            src_type = node_entities.get(path[i], ("", ""))[0]
+            tgt_type = node_entities.get(path[i + 1], ("", ""))[0]
+            if src_type == "account" and tgt_type == "ip":
+                return True
+        return False
+
+    assert any(path_has_account_to_ip(path) for path in paths), (
+        f"No account→ip adjacency in attack paths {paths}; nodes={node_entities}"
     )
 
 
@@ -531,3 +537,169 @@ class TestGraphAgentIntegration:
             runs.append({n.node_id for n in output.nodes})
 
         assert runs[0] == runs[1] == runs[2], "Repeated execution must produce identical node IDs"
+
+    async def test_builder_failure_sets_graph_degraded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GraphBuilder exception → empty output and graph_degraded flag."""
+        from app.models.agent_io import EvidenceOutput
+
+        event_id = f"evt-builder-fail-{_new_sfx()}"
+        wm = _FakeWorkingMemory()
+
+        def _boom(_evidence: list[Evidence]) -> tuple[list[Any], list[Any]]:
+            raise RuntimeError("builder exploded")
+
+        monkeypatch.setattr("app.agents.graph_agent.GraphBuilder.build", _boom)
+
+        agent_input = GraphAgentInput(
+            event_id=event_id,
+            evidence_output=EvidenceOutput(
+                evidence_list=_main_scenario_evidence(event_id),
+                conflicts=[],
+                gaps=[],
+                success_sources=[EvidenceSource.IDENTITY.value],
+                failed_sources=[],
+                overall_confidence=0.5,
+                collection_status=CollectionStatus.COMPLETED,
+            ),
+        )
+
+        agent = _build_agent(wm=wm)
+        output = await agent.execute(agent_input)
+
+        assert output.nodes == []
+        assert output.edges == []
+        assert agent.last_degraded_reason == "graph_builder_failed"
+        degraded = await wm.read(event_id, "graph_degraded")
+        assert degraded is not None
+        assert degraded["degraded"] is True
+        assert degraded["reason"] == "graph_builder_failed"
+
+    async def test_persist_failure_sets_graph_degraded(self) -> None:
+        """Persist failure still returns in-memory graph and marks graph_degraded."""
+        from app.models.agent_io import EvidenceOutput
+
+        event_id = f"evt-persist-fail-{_new_sfx()}"
+        wm = _FakeWorkingMemory()
+
+        class _BrokenSessionFactory:
+            def __call__(self) -> Any:
+                raise RuntimeError("db unavailable")
+
+        agent = GraphAgent(
+            working_memory=wm,
+            session_factory=_BrokenSessionFactory(),  # type: ignore[arg-type]
+        )
+
+        evidence_output = EvidenceOutput(
+            evidence_list=_main_scenario_evidence(event_id),
+            conflicts=[],
+            gaps=[],
+            success_sources=[EvidenceSource.IDENTITY.value],
+            failed_sources=[],
+            overall_confidence=0.85,
+            collection_status=CollectionStatus.COMPLETED,
+        )
+
+        output = await agent.execute(
+            GraphAgentInput(event_id=event_id, evidence_output=evidence_output)
+        )
+
+        assert len(output.nodes) >= 6
+        assert agent.last_degraded_reason is not None
+        assert agent.last_degraded_reason.startswith("graph_persist_failed:")
+        degraded = await wm.read(event_id, "graph_degraded")
+        assert degraded is not None
+        assert degraded["degraded"] is True
+        assert degraded["reason"].startswith("graph_persist_failed:")
+
+
+# ====================================================================== #
+# DB integration: persist idempotency
+# ====================================================================== #
+
+
+@pytest.mark.integration
+async def test_graph_persist_idempotent_node_count() -> None:
+    """Repeated GraphAgent persist upserts nodes without duplication."""
+    import asyncio
+    import os
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import func, select, text
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.db import models as orm
+    from app.db.orm.graph import GraphNodeORM
+    from app.models.agent_io import EvidenceOutput, GraphAgentInput
+
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://shadowtrace:shadowtrace@localhost:5432/shadowtrace",
+    )
+    backend_dir = Path(__file__).resolve().parents[2]
+    cfg = Config(str(backend_dir / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_dir / "migrations"))
+
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception:
+        await engine.dispose()
+        pytest.skip("PostgreSQL not reachable; start Compose postgres first")
+
+    await asyncio.to_thread(command.upgrade, cfg, "head")
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+
+    sfx = _new_sfx()
+    event_id = f"evt-graph-persist-{sfx}"
+    async with session_factory() as session:
+        async with session.begin():
+            session.add(
+                orm.SecurityEvent(
+                    event_id=event_id,
+                    event_type="insider_threat",
+                    title="graph persist test",
+                    creation_source_ref={"source_object_id": f"INC-{sfx}"},
+                )
+            )
+
+    wm = _FakeWorkingMemory()
+    agent = GraphAgent(working_memory=wm, session_factory=session_factory)
+    evidence_output = EvidenceOutput(
+        evidence_list=_main_scenario_evidence(event_id),
+        conflicts=[],
+        gaps=[],
+        success_sources=[
+            EvidenceSource.IDENTITY.value,
+            EvidenceSource.ENDPOINT.value,
+            EvidenceSource.DATA_SECURITY.value,
+            EvidenceSource.NETWORK_FLOW.value,
+            EvidenceSource.DNS.value,
+        ],
+        failed_sources=[],
+        overall_confidence=0.85,
+        collection_status=CollectionStatus.COMPLETED,
+    )
+    agent_input = GraphAgentInput(event_id=event_id, evidence_output=evidence_output)
+
+    first = await agent.execute(agent_input)
+    second = await agent.execute(agent_input)
+
+    assert len(first.nodes) == len(second.nodes)
+    assert {n.node_id for n in first.nodes} == {n.node_id for n in second.nodes}
+
+    async with session_factory() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(GraphNodeORM)
+            .where(GraphNodeORM.event_id == event_id)
+        )
+    assert count == len(first.nodes)
+
+    await engine.dispose()

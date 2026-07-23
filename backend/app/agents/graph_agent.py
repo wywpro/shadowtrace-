@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agents.base import BaseAgent
 from app.agents.graph_builder import GraphBuilder
+from app.core.errors import ShadowTraceError
 from app.db.orm.graph import GraphEdgeORM, GraphNodeORM
 from app.models.agent_io import GraphAgentInput, GraphOutput
 from app.models.evidence import Evidence
@@ -64,6 +65,7 @@ class GraphAgent(BaseAgent[GraphAgentInput, GraphOutput]):
         self._session_factory = session_factory
         self.last_persist_error: str | None = None
         self.last_persist_ok: bool = False
+        self.last_degraded_reason: str | None = None
 
     # ------------------------------------------------------------------ #
     # Public entry-point
@@ -72,13 +74,17 @@ class GraphAgent(BaseAgent[GraphAgentInput, GraphOutput]):
     async def _run(self, input: GraphAgentInput) -> GraphOutput:
         event_id = input.event_id
         evidence_list: list[Evidence] = input.evidence_output.evidence_list
+        self.last_degraded_reason = None
 
         # 1. Build graph from evidence (pure in-memory transformation)
         try:
             nodes, edges = GraphBuilder.build(evidence_list)
         except Exception:
             logger.exception("GraphBuilder failed for event=%s", event_id)
-            return self._empty_degraded()
+            output = self._empty_degraded()
+            await self._mark_degraded(event_id, reason="graph_builder_failed")
+            await self._write_context(event_id, output)
+            return output
 
         # 2. Compute centrality (top 3 entities by degree)
         central_entities = _compute_central_entities(nodes, edges)
@@ -96,6 +102,11 @@ class GraphAgent(BaseAgent[GraphAgentInput, GraphOutput]):
 
         # 5. Persist to PostgreSQL (best-effort; degrades on failure)
         await self._persist_graph(event_id, nodes, edges)
+        if self.last_persist_error is not None:
+            await self._mark_degraded(
+                event_id,
+                reason=f"graph_persist_failed: {self.last_persist_error}",
+            )
 
         # 6. Write to EventContext via WorkingMemory
         await self._write_context(event_id, output)
@@ -203,6 +214,27 @@ class GraphAgent(BaseAgent[GraphAgentInput, GraphOutput]):
             )
         except Exception:
             logger.warning("GraphAgent WM write failed event=%s", event_id, exc_info=True)
+
+    async def _mark_degraded(self, event_id: str, *, reason: str) -> None:
+        """Best-effort degraded marker for graph build/persist failures."""
+        self.last_degraded_reason = reason
+        if self.working_memory is None:
+            return
+        try:
+            await self.working_memory.write(
+                event_id,
+                "graph_degraded",
+                {
+                    "degraded": True,
+                    "reason": reason,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
+            )
+        except ShadowTraceError:
+            logger.exception(
+                "Failed to persist graph_degraded flag for event=%s",
+                event_id,
+            )
 
     # ------------------------------------------------------------------ #
     # Helpers
