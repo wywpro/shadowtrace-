@@ -11,7 +11,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, status
-from sqlalchemy import func, select
+from sqlalchemy import exc as sa_exc, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.v1 import schemas as s
@@ -25,6 +26,8 @@ from app.api.v1.errors import (
     WritebackPendingError,
     WritebackUnsupportedError,
 )
+from app.core.errors import DependencyUnavailableError
+
 from app.core.auth import (
     ROLE_ADMIN,
     ROLE_ANALYST,
@@ -88,9 +91,11 @@ def _try_get_session_factory() -> async_sessionmaker[AsyncSession] | None:
         # Configuration errors must propagate — a malformed database_url or
         # similar config issue must not be silently swallowed (ISSUE-038 #8).
         raise
-    except Exception:
+    except (ConnectionRefusedError, TimeoutError, OSError):
+        # Transient infrastructure errors (network, filesystem) — degrade
+        # gracefully so the API can still return empty results rather than 5xx.
         logger.warning(
-            "Database session factory unavailable (runtime error) — "
+            "Database session factory unavailable (transient error) — "
             "returning empty results",
             exc_info=True,
         )
@@ -198,13 +203,64 @@ async def _generate_quick_close_report(
     await event_service.upsert_report(report)
 
     # Record the system action for audit trail.
+    # Only catch IntegrityError (idempotent re-entry race); let other
+    # exceptions propagate so callers get DependencyUnavailableError rather
+    # than silently incomplete audit trails.
     try:
         await event_service.upsert_generate_report_action(event_id, plan_revision=1)
-    except Exception:
+    except IntegrityError:
         logger.warning(
-            "Failed to record generate_report action for quick-close event=%s",
+            "generate_report action already exists for quick-close event=%s "
+            "(concurrent upsert race)",
             event_id,
             exc_info=True,
+        )
+
+
+async def _validate_writeback_gate(
+    event_id: str,
+    event: Any,
+) -> None:
+    """Validate the writeback gate before allowing close.
+
+    For REQUIRED disposition_policy events, checks writeback readiness and
+    outbox status.  Raises the appropriate error for each blocked case so
+    callers never need to duplicate the gate logic.
+
+    No-op for NOT_REQUIRED events.
+    """
+    if event.disposition_policy != DispositionPolicy.REQUIRED:
+        return
+
+    from app.api.v1.deps import _get_session_factory
+
+    readiness, wb_status, _pending = await _build_writeback_info(
+        event_id, event.disposition_policy, _get_session_factory()
+    )
+    if readiness == WritebackReadiness.NOT_CONFIGURED:
+        raise WritebackUnsupportedError(
+            "required disposition_policy but no disposition Action configured",
+            details={"event_id": event_id},
+        )
+    if readiness not in (WritebackReadiness.READY, WritebackReadiness.NOT_REQUIRED):
+        raise WritebackUnsupportedError(
+            f"writeback readiness is {readiness.value}",
+            details={"event_id": event_id, "readiness": readiness.value},
+        )
+    if wb_status in (WritebackStatus.PENDING, WritebackStatus.UNKNOWN):
+        raise WritebackPendingError(
+            f"writeback is {wb_status.value}",
+            details={"event_id": event_id, "writeback_status": wb_status.value},
+        )
+    if wb_status == WritebackStatus.FAILED:
+        raise WritebackFailedError(
+            "writeback failed",
+            details={"event_id": event_id},
+        )
+    if wb_status == WritebackStatus.CONFLICT:
+        raise WritebackConflictError(
+            "writeback conflict",
+            details={"event_id": event_id},
         )
 
 
@@ -357,6 +413,8 @@ async def list_events(
         occurred_before=end_time,
         page=page,
         page_size=page_size,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
     items: list[s.EventListItem] = []
     for event in result.items:
@@ -565,37 +623,7 @@ async def close_event(
         )
     elif current_status == EventStatus.REPORTING:
         # ISSUE-038 step 2: writeback gate pre-check.
-        if event.disposition_policy == DispositionPolicy.REQUIRED:
-            from app.api.v1.deps import _get_session_factory
-
-            readiness, wb_status, _pending = await _build_writeback_info(
-                event_id, event.disposition_policy, _get_session_factory()
-            )
-            if readiness == WritebackReadiness.NOT_CONFIGURED:
-                raise WritebackUnsupportedError(
-                    "required disposition_policy but no disposition Action configured",
-                    details={"event_id": event_id},
-                )
-            if readiness not in (WritebackReadiness.READY, WritebackReadiness.NOT_REQUIRED):
-                raise WritebackUnsupportedError(
-                    f"writeback readiness is {readiness.value}",
-                    details={"event_id": event_id, "readiness": readiness.value},
-                )
-            if wb_status in (WritebackStatus.PENDING, WritebackStatus.UNKNOWN):
-                raise WritebackPendingError(
-                    f"writeback is {wb_status.value}",
-                    details={"event_id": event_id, "writeback_status": wb_status.value},
-                )
-            if wb_status == WritebackStatus.FAILED:
-                raise WritebackFailedError(
-                    "writeback failed",
-                    details={"event_id": event_id},
-                )
-            if wb_status == WritebackStatus.CONFLICT:
-                raise WritebackConflictError(
-                    "writeback conflict",
-                    details={"event_id": event_id},
-                )
+        await _validate_writeback_gate(event_id, event)
 
         # Handle final_verdict change before closing.
         if body.final_verdict is not None and body.final_verdict != event.final_verdict:
@@ -612,39 +640,9 @@ async def close_event(
         )
     elif current_status == EventStatus.FAILED:
         # FAILED → REPORTING → CLOSED.
-        # ISSUE-038: writeback gate pre-check (same as REPORTING branch) before
-        # any state transitions to avoid leaving the event stuck in REPORTING.
-        if event.disposition_policy == DispositionPolicy.REQUIRED:
-            from app.api.v1.deps import _get_session_factory
-
-            readiness, wb_status, _pending = await _build_writeback_info(
-                event_id, event.disposition_policy, _get_session_factory()
-            )
-            if readiness == WritebackReadiness.NOT_CONFIGURED:
-                raise WritebackUnsupportedError(
-                    "required disposition_policy but no disposition Action configured",
-                    details={"event_id": event_id},
-                )
-            if readiness not in (WritebackReadiness.READY, WritebackReadiness.NOT_REQUIRED):
-                raise WritebackUnsupportedError(
-                    f"writeback readiness is {readiness.value}",
-                    details={"event_id": event_id, "readiness": readiness.value},
-                )
-            if wb_status in (WritebackStatus.PENDING, WritebackStatus.UNKNOWN):
-                raise WritebackPendingError(
-                    f"writeback is {wb_status.value}",
-                    details={"event_id": event_id, "writeback_status": wb_status.value},
-                )
-            if wb_status == WritebackStatus.FAILED:
-                raise WritebackFailedError(
-                    "writeback failed",
-                    details={"event_id": event_id},
-                )
-            if wb_status == WritebackStatus.CONFLICT:
-                raise WritebackConflictError(
-                    "writeback conflict",
-                    details={"event_id": event_id},
-                )
+        # ISSUE-038: writeback gate pre-check before any state transitions
+        # to avoid leaving the event stuck in REPORTING.
+        await _validate_writeback_gate(event_id, event)
 
         # Generate a quick-close report so validate_closed_gate can pass.
         await _generate_quick_close_report(
@@ -684,7 +682,11 @@ async def close_event(
 
     # Reload final state.
     event = await event_service.get_event(event_id)
-    assert event is not None
+    if event is None:
+        raise EventNotFoundError(
+            f"event {event_id} disappeared after close",
+            details={"event_id": event_id},
+        )
     return s.EventCloseResponse(
         event_id=event_id,
         status=event.status,
@@ -1035,9 +1037,15 @@ async def list_tool_calls(
             )
 
         return s.ToolCallsResponse(total=total, page=page, page_size=page_size, items=items)
-    except Exception:
-        logger.warning("Global tool-calls query failed", exc_info=True)
+    except (ConnectionRefusedError, TimeoutError, sa_exc.OperationalError):
+        logger.warning("Global tool-calls query failed (transient DB error)", exc_info=True)
         return s.ToolCallsResponse(total=0, page=page, page_size=page_size, items=[])
+    except Exception as exc:
+        logger.error("Global tool-calls query failed (non-transient): %s", exc, exc_info=True)
+        raise DependencyUnavailableError(
+            "database query failed for global tool-calls",
+            error_code="dependency_unavailable",
+        ) from exc
 
 
 # --------------------------------------------------------------------------- #

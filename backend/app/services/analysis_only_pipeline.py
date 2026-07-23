@@ -176,7 +176,11 @@ class AnalysisOnlyPipeline:
         await self._run_report(event_id, triage_result, evidence_output, risk_assessment)
 
         event = await self._event_service.get_event(event_id)
-        assert event is not None
+        if event is None:
+            raise ShadowTraceError(
+                f"event {event_id} disappeared during pipeline execution",
+                error_code="event_not_found",
+            )
 
         if event.disposition_policy == DispositionPolicy.REQUIRED:
             # High-risk: stay at REPORTING, mark analysis_only_complete.
@@ -319,13 +323,11 @@ class AnalysisOnlyPipeline:
             triage_result.severity.value,
         )
 
-        # Transition TRIAGING → REPORTING (needs report before CLOSED gate).
-        await self._state_machine.transition(
-            event_id,
-            EventStatus.REPORTING,
-            operator=_PIPELINE_OPERATOR,
-            reason="analysis_pipeline:short_circuit_report",
-        )
+        # Generate quick-close report first (satisfies CLOSED gate's report_exists),
+        # then transition directly TRIAGING→CLOSED.
+        # TRIAGING→REPORTING is an illegal edge in STATE_TRANSITIONS; going
+        # directly to CLOSED matches close_event's TRIAGING path (events.py:548-565)
+        # and ISSUE-038's "TRIAGING + not_required → quick close" spec.
 
         # Build placeholder evidence/risk for the quick-close report.
         placeholder_evidence = EvidenceOutput(
@@ -348,7 +350,8 @@ class AnalysisOnlyPipeline:
 
         await self._run_report(event_id, triage_result, placeholder_evidence, placeholder_risk)
 
-        # Transition to CLOSED.
+        # Transition directly TRIAGING→CLOSED (valid edge; gated by
+        # disposition_policy=not_required + severity=LOW / close_as_fp).
         ctx = TransitionContext(
             need_investigation=False,
             recommendation="close_as_fp",

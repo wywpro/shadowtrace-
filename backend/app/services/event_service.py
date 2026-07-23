@@ -476,6 +476,17 @@ class EventService:
             connector_ids=connector_ids,
         )
 
+    # Whitelist of columns allowed for sort_by in list_events.
+    _SORT_COLUMN_MAP: dict[str, Any] = {
+        "created_at": orm.SecurityEvent.created_at,
+        "updated_at": orm.SecurityEvent.updated_at,
+        "occurred_at": orm.SecurityEvent.occurred_at,
+        "severity": orm.SecurityEvent.severity,
+        "risk_score": orm.SecurityEvent.risk_score,
+        "status": orm.SecurityEvent.status,
+        "event_type": orm.SecurityEvent.event_type,
+    }
+
     async def list_events(
         self,
         *,
@@ -488,6 +499,8 @@ class EventService:
         occurred_before: datetime | None = None,
         page: int = 1,
         page_size: int = 20,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> EventListResult:
         page = max(1, page)
         page_size = min(max(1, page_size), 200)
@@ -529,9 +542,17 @@ class EventService:
         if occurred_before is not None:
             filters.append(orm.SecurityEvent.occurred_at <= occurred_before)
 
+        # Resolve sort column (whitelist only; default to created_at).
+        sort_col = self._SORT_COLUMN_MAP.get(
+            sort_by or "created_at", orm.SecurityEvent.created_at
+        )
+        descending = (sort_order or "desc") != "asc"
+
         async with self._session_factory() as session:
             count_stmt = select(func.count()).select_from(orm.SecurityEvent)
-            list_stmt = select(orm.SecurityEvent).order_by(orm.SecurityEvent.created_at.desc())
+            list_stmt = select(orm.SecurityEvent).order_by(
+                sort_col.desc() if descending else sort_col.asc()
+            )
             if filters:
                 count_stmt = count_stmt.where(and_(*filters))
                 list_stmt = list_stmt.where(and_(*filters))
