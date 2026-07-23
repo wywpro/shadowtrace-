@@ -160,6 +160,7 @@ async def get_pipeline() -> Any:
         from app.agents.risk_agent import RiskAgent
         from app.agents.triage_agent import TriageAgent
         from app.services.analysis_only_pipeline import AnalysisOnlyPipeline
+        from app.tools.executor import get_tool_executor
 
         event_service = await get_event_service()
         state_machine = await get_state_machine()
@@ -171,7 +172,7 @@ async def get_pipeline() -> Any:
         )
         evidence = EvidenceAgent(
             llm_client=None,
-            tool_executor=None,
+            tool_executor=get_tool_executor(),
             working_memory=wm.for_writer("EvidenceAgent"),
         )
         rag = RAGAgent(
@@ -218,3 +219,6 @@ def reset_deps() -> None:
     _event_bus = None
     _pipeline = None
     _approval_engine = None
+    from app.tools import executor as tool_executor_module
+
+    tool_executor_module.tool_executor = None

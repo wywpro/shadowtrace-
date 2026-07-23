@@ -30,6 +30,7 @@ EXPECTED_CONTEXT_FIELDS = {
     "risk_assessment",
     "execution_plan",
     "response_plan",
+    "analysis_only_complete",
     "approval_records",
     "disposition_only_intent",
     "execution_substate",

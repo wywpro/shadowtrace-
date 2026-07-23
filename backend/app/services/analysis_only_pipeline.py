@@ -220,8 +220,7 @@ class AnalysisOnlyPipeline:
                 )
             if event.status is not EventStatus.NEW:
                 raise InvalidStateTransitionError(
-                    "AnalysisOnlyPipeline requires event in NEW status, "
-                    f"got {event.status.value}",
+                    f"AnalysisOnlyPipeline requires event in NEW status, got {event.status.value}",
                     current=event.status,
                     target=EventStatus.TRIAGING,
                     details={"event_id": event_id},
@@ -308,10 +307,7 @@ class AnalysisOnlyPipeline:
         )
         report = await self._run_report(event_id, evidence_output, risk_assessment)
 
-        if (
-            self._state_machine is not None
-            and self._event_service is not None
-        ):
+        if self._state_machine is not None and self._event_service is not None:
             event = await self._event_service.get_event(event_id)
             if event is None:
                 raise ShadowTraceError(

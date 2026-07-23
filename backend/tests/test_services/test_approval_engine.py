@@ -158,6 +158,32 @@ async def engine(
     )
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _cleanup_db(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[None]:
+    async with session_factory() as session:
+        async with session.begin():
+            for table in (
+                ApprovalRecordORM,
+                orm.EventAuditLog,
+                orm.EventContextJournal,
+                orm.EventContextFieldVersion,
+                orm.ActionTargetResult,
+                orm.ActionExecutionJob,
+                orm.DispositionReceipt,
+                orm.DispositionOutbox,
+                orm.Action,
+                orm.Evidence,
+                orm.Report,
+                orm.SourceEventLink,
+                orm.SourceObject,
+                orm.SecurityEvent,
+            ):
+                await session.execute(delete(table))
+    yield
+
+
 @pytest_asyncio.fixture
 async def cleanup(
     session_factory: async_sessionmaker[AsyncSession],

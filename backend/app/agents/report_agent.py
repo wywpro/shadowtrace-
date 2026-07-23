@@ -466,6 +466,7 @@ class ReportAgent(BaseAgent[ReportAgentInput, InvestigationReport]):
                 exc_info=True,
             )
             raise
+
     async def _record_generate_report_action(self, input: ReportAgentInput) -> None:
         if self.event_service is None:
             return

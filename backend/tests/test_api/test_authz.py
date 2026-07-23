@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.api.v1 import schemas as s
 from app.core.config import get_settings
 from app.main import app
+from app.models.security_event import SecurityEvent
 
 _DEV_TOKENS = json.dumps(
     {
@@ -31,7 +32,7 @@ def _dev_auth(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def client() -> TestClient:
-    from app.api.v1.deps import get_approval_engine
+    from app.api.v1.deps import get_approval_engine, get_event_service, get_state_machine
 
     class _StubApprovalEngine:
         async def approve(self, *args: object, **kwargs: object) -> None:
@@ -46,9 +47,41 @@ def client() -> TestClient:
     async def _stub_engine() -> _StubApprovalEngine:
         return _StubApprovalEngine()
 
+    class _StubStateMachine:
+        async def force_close(
+            self,
+            event_id: str,
+            *,
+            principal: str,
+            reason: str,
+        ) -> SecurityEvent:
+            return s.example_security_event(event_id)
+
+    async def _stub_state_machine() -> _StubStateMachine:
+        return _StubStateMachine()
+
+    class _StubEventService:
+        async def get_event(self, event_id: str) -> SecurityEvent | None:
+            if event_id == s.EXAMPLE_EVENT_ID:
+                return s.example_security_event(event_id)
+            return None
+
+        async def list_events(self, **kwargs: object) -> object:
+            from app.models.security_event import EventListResult
+
+            return EventListResult(items=[], total=0, page=1, page_size=20)
+
+    async def _stub_event_service() -> _StubEventService:
+        return _StubEventService()
+
     app.dependency_overrides[get_approval_engine] = _stub_engine
-    yield TestClient(app)
+    app.dependency_overrides[get_event_service] = _stub_event_service
+    app.dependency_overrides[get_state_machine] = _stub_state_machine
+    with TestClient(app) as test_client:
+        yield test_client
     app.dependency_overrides.pop(get_approval_engine, None)
+    app.dependency_overrides.pop(get_event_service, None)
+    app.dependency_overrides.pop(get_state_machine, None)
 
 
 def _hdr(role: str) -> dict[str, str]:

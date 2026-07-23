@@ -1241,10 +1241,14 @@ async def test_upsert_report_idempotent_by_report_id(
 
     async with session_factory() as session:
         rows = (
-            await session.execute(
-                select(orm.Report).where(orm.Report.event_id == created.event_id)
+            (
+                await session.execute(
+                    select(orm.Report).where(orm.Report.event_id == created.event_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(rows) == 1
 
 
@@ -1323,8 +1327,10 @@ async def test_upsert_response_plan_actions_idempotent_by_fingerprint(
 
     async with session_factory() as session:
         rows = (
-            await session.execute(select(orm.Action).where(orm.Action.event_id == event_id))
-        ).scalars().all()
+            (await session.execute(select(orm.Action).where(orm.Action.event_id == event_id)))
+            .scalars()
+            .all()
+        )
         assert len(rows) == 1
         journal = await session.scalar(
             select(func.count())

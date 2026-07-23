@@ -25,7 +25,7 @@ from app.models.enums import (
 )
 from app.services.event_service import EventService
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("clean_state")]
 
 _DEV_TOKENS = json.dumps(
     {
@@ -78,7 +78,8 @@ def client(
         return event_service
 
     app.dependency_overrides[get_event_service] = _override_event_service
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 # --------------------------------------------------------------------------- #
@@ -142,6 +143,7 @@ async def _seed_reporting_required_event(
                         "connector_id": f"conn-{sfx}",
                         "source_object_id": f"INC-{sfx}",
                         "raw_payload_hash": hashlib.sha256(b"wb").hexdigest(),
+                        "schema_version": "1",
                         "ingested_at": now.isoformat(),
                     },
                     source_reference_snapshots=[],
@@ -299,7 +301,7 @@ async def test_create_event_returns_201(
                 "source_object_id": "ALT-99901",
                 "source_status_raw": "open",
                 "source_disposition": "pending",
-                "schema_version": 1,
+                "schema_version": "1",
             },
         },
         headers=_hdr(),
@@ -331,7 +333,7 @@ async def test_create_event_rejects_unknown_fields(
                 "source_object_id": "ALT-99902",
                 "source_status_raw": "open",
                 "source_disposition": "pending",
-                "schema_version": 1,
+                "schema_version": "1",
             },
         },
         headers=_hdr(),
@@ -930,7 +932,7 @@ async def test_investigate_high_risk_http_polls_to_reporting(
         source_object_id="INC-HTTP-HIGH-001",
         source_status_raw="open",
         source_disposition=SourceDisposition.PENDING,
-        schema_version=1,
+        schema_version="1",
     )
     ingest = IngestableSource(
         reference=ref,
@@ -1098,6 +1100,7 @@ async def test_full_analysis_pipeline_happy_path(
     from app.services.context_service import EventContextStore
     from app.services.degraded_flag_service import DegradedFlagService
     from app.services.working_memory import WorkingMemory
+    from app.tools.executor import get_tool_executor
 
     settings = get_settings()
 
@@ -1113,7 +1116,7 @@ async def test_full_analysis_pipeline_happy_path(
     )
     evidence = EvidenceAgent(
         llm_client=None,
-        tool_executor=None,
+        tool_executor=get_tool_executor(),
         working_memory=wm.for_writer("EvidenceAgent"),
     )
     rag = RAGAgent(
@@ -1184,6 +1187,7 @@ async def test_high_risk_event_stays_reporting(
     from app.services.context_service import EventContextStore
     from app.services.degraded_flag_service import DegradedFlagService
     from app.services.working_memory import WorkingMemory
+    from app.tools.executor import get_tool_executor
 
     settings = get_settings()
 
@@ -1198,7 +1202,7 @@ async def test_high_risk_event_stays_reporting(
     )
     evidence = EvidenceAgent(
         llm_client=None,
-        tool_executor=None,
+        tool_executor=get_tool_executor(),
         working_memory=wm.for_writer("EvidenceAgent"),
     )
     rag = RAGAgent(
@@ -1241,7 +1245,7 @@ async def test_high_risk_event_stays_reporting(
         source_object_id="INC-HIGH-001",
         source_status_raw="open",
         source_disposition=SourceDisposition.PENDING,
-        schema_version=1,
+        schema_version="1",
     )
     ingest = IngestableSource(
         reference=ref,
@@ -1287,6 +1291,7 @@ async def test_analysis_only_complete_persisted_in_context(
     from app.services.context_service import EventContextStore
     from app.services.degraded_flag_service import DegradedFlagService
     from app.services.working_memory import WorkingMemory
+    from app.tools.executor import get_tool_executor
 
     settings = get_settings()
 
@@ -1301,7 +1306,7 @@ async def test_analysis_only_complete_persisted_in_context(
     )
     evidence = EvidenceAgent(
         llm_client=None,
-        tool_executor=None,
+        tool_executor=get_tool_executor(),
         working_memory=wm.for_writer("EvidenceAgent"),
     )
     rag = RAGAgent(

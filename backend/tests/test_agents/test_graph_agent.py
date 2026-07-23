@@ -696,9 +696,7 @@ async def test_graph_persist_idempotent_node_count() -> None:
 
     async with session_factory() as session:
         count = await session.scalar(
-            select(func.count())
-            .select_from(GraphNodeORM)
-            .where(GraphNodeORM.event_id == event_id)
+            select(func.count()).select_from(GraphNodeORM).where(GraphNodeORM.event_id == event_id)
         )
     assert count == len(first.nodes)
 
