@@ -793,6 +793,15 @@ async def test_playbook_expands_all_entity_targets() -> None:
 
 def test_enforce_execution_owner_consistency_drops_direct_tool() -> None:
     manifest = build_mock_capability_manifest()
+<<<<<<< HEAD
+=======
+    ResponsePolicyFilter(
+        manifest=manifest,
+        entities=_entities(),
+        disposition_policy=DispositionPolicy.REQUIRED,
+        source_locator=None,
+    )
+>>>>>>> 8297478 (fix: resolve backend-lint ruff import and line-length violations)
 
     class _OwnerFilter(ResponsePolicyFilter):
         def resolve_execution_owner(self, tool_name: str) -> ExecutionOwner | None:
