@@ -1,4 +1,4 @@
-"""Disposition / writeback read + controlled-retry endpoints.
+"""Disposition / writeback read + controlled-retry endpoints (ISSUE-059).
 
 These endpoints only read or controllably re-enqueue the outbox; they never
 construct disposition commands or bypass the ApprovalEngine.
@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter
 
 from app.api.v1 import schemas as s
-from app.api.v1.errors import ResourceNotFoundError, WritebackConflictError
+from app.api.v1.deps import DispositionSyncDep
 from app.core.auth import (
     ROLE_ADMIN,
     ROLE_DISPOSITION_OPERATOR,
@@ -19,65 +19,71 @@ from app.core.auth import (
     Principal,
     require_roles,
 )
+from app.core.errors import EventNotFoundError
 from app.models.enums import ConfirmationEvidence, WritebackStatus
 
 router = APIRouter(tags=["dispositions"])
 
-_KNOWN_DISPOSITIONS = {"disp-0a1b2c3d"}
-# writeback_id -> current status (for placeholder retry/verify semantics)
-_KNOWN_WRITEBACKS = {
-    "wbk-0a1b2c3d": WritebackStatus.CONFIRMED,
-    "wbk-unknown": WritebackStatus.UNKNOWN,
-}
-
 
 @router.get("/events/{event_id}/dispositions", response_model=s.DispositionListResponse)
 async def list_event_dispositions(
-    event_id: str, principal: CurrentPrincipal
+    event_id: str,
+    principal: CurrentPrincipal,
+    sync: DispositionSyncDep,
 ) -> s.DispositionListResponse:
+    items = await sync.list_event_dispositions(event_id)
     return s.DispositionListResponse(
         event_id=event_id,
         items=[
-            s.DispositionResponse(
-                disposition=s.example_disposition_command(),
-                writeback_status=WritebackStatus.CONFIRMED,
-            )
+            s.DispositionResponse(disposition=command, writeback_status=status)
+            for command, status in items
         ],
     )
 
 
 @router.get("/dispositions/{disposition_id}", response_model=s.DispositionResponse)
 async def get_disposition(
-    disposition_id: str, principal: CurrentPrincipal
+    disposition_id: str,
+    principal: CurrentPrincipal,
+    sync: DispositionSyncDep,
 ) -> s.DispositionResponse:
-    if disposition_id not in _KNOWN_DISPOSITIONS:
-        raise ResourceNotFoundError(
-            f"disposition {disposition_id} not found",
-            details={"disposition_id": disposition_id},
-        )
-    return s.DispositionResponse(
-        disposition=s.example_disposition_command(), writeback_status=WritebackStatus.CONFIRMED
+    # disposition_id maps to the outbox command's disposition_id field.
+    raise EventNotFoundError(
+        f"disposition {disposition_id} not found",
+        details={"disposition_id": disposition_id},
     )
 
 
 @router.get("/writebacks/{writeback_id}", response_model=s.WritebackResponse)
-async def get_writeback(writeback_id: str, principal: CurrentPrincipal) -> s.WritebackResponse:
-    status_value = _KNOWN_WRITEBACKS.get(writeback_id)
-    if status_value is None:
-        raise ResourceNotFoundError(
-            f"writeback {writeback_id} not found", details={"writeback_id": writeback_id}
-        )
+async def get_writeback(
+    writeback_id: str,
+    principal: CurrentPrincipal,
+    sync: DispositionSyncDep,
+) -> s.WritebackResponse:
+    record, receipt = await sync.get_writeback(writeback_id)
+    status = (
+        WritebackStatus(record.latest_writeback_status)
+        if record.latest_writeback_status
+        else WritebackStatus.PENDING
+    )
+    confirmation = receipt.confirmation_evidence if receipt is not None else None
     return s.WritebackResponse(
         writeback_id=writeback_id,
-        disposition_id="disp-0a1b2c3d",
-        action_id="act-0a1b2c3d",
-        status=status_value,
-        confirmation_evidence=(
-            ConfirmationEvidence.READBACK_VERIFIED
-            if status_value is WritebackStatus.CONFIRMED
+        disposition_id=record.disposition_id,
+        action_id=record.action_id,
+        status=status,
+        confirmation_evidence=confirmation,
+        evidence_tier=(
+            "strong"
+            if confirmation is ConfirmationEvidence.MANUAL_CONFIRMED
+            or confirmation is ConfirmationEvidence.READBACK_VERIFIED
             else None
         ),
-        evidence_tier="strong" if status_value is WritebackStatus.CONFIRMED else None,
+        provider_code=receipt.provider_code if receipt is not None else None,
+        message_code=receipt.provider_message if receipt is not None else None,
+        target_results=(
+            [item for item in receipt.target_results] if receipt is not None else []
+        ),
     )
 
 
@@ -85,22 +91,14 @@ async def get_writeback(writeback_id: str, principal: CurrentPrincipal) -> s.Wri
 async def retry_writeback(
     writeback_id: str,
     principal: Annotated[Principal, require_roles(ROLE_DISPOSITION_OPERATOR)],
+    sync: DispositionSyncDep,
 ) -> s.WritebackOperationResponse:
-    status_value = _KNOWN_WRITEBACKS.get(writeback_id)
-    if status_value is None:
-        raise ResourceNotFoundError(
-            f"writeback {writeback_id} not found", details={"writeback_id": writeback_id}
-        )
-    # An UNKNOWN writeback must be verified (queried) before any retry; retrying
-    # blindly could double-apply an external side effect.
-    if status_value is WritebackStatus.UNKNOWN:
-        raise WritebackConflictError(
-            "writeback is UNKNOWN and must be verified before retry",
-            details={"writeback_id": writeback_id, "status": status_value.value},
-        )
-    # retry only re-enqueues the same outbox row (idempotent).
+    status = await sync.retry_writeback(writeback_id, operator=principal.subject)
+    await sync.process_ready_outboxes(limit=1)
     return s.WritebackOperationResponse(
-        writeback_id=writeback_id, status=WritebackStatus.PENDING, message="re-enqueued"
+        writeback_id=writeback_id,
+        status=status,
+        message="re-enqueued",
     )
 
 
@@ -109,18 +107,17 @@ async def resolve_writeback(
     writeback_id: str,
     body: s.ResolveWritebackRequest,
     principal: Annotated[Principal, require_roles(ROLE_ADMIN)],
+    sync: DispositionSyncDep,
 ) -> s.WritebackOperationResponse:
-    status_value = _KNOWN_WRITEBACKS.get(writeback_id)
-    if status_value is None:
-        raise ResourceNotFoundError(
-            f"writeback {writeback_id} not found", details={"writeback_id": writeback_id}
-        )
-    # Admin-only manual resolution with CAS + evidence; never triggers entity actions.
-    new_status = (
-        WritebackStatus.CONFIRMED
-        if body.resolution == "manual_confirmed"
-        else WritebackStatus.FAILED
+    status = await sync.resolve_writeback(
+        writeback_id,
+        body.resolution,
+        principal=principal.subject,
+        comment=body.comment,
+        evidence_ref=body.evidence_ref,
     )
     return s.WritebackOperationResponse(
-        writeback_id=writeback_id, status=new_status, message="resolved"
+        writeback_id=writeback_id,
+        status=status,
+        message="resolved",
     )
