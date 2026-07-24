@@ -243,9 +243,7 @@ async def _seed_reporting_required_event(
                                 writeback_applicable=True,
                                 writeback_readiness=WritebackReadiness.READY.value,
                                 writeback_status=WritebackStatus.CONFIRMED.value,
-                                approved_terminal_dispositions=[
-                                    SourceDisposition.CONTAINED.value
-                                ],
+                                approved_terminal_dispositions=[SourceDisposition.CONTAINED.value],
                             )
                         )
                         await session.flush()

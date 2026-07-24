@@ -567,9 +567,7 @@ class ActionExecutionService:
             ).all()
             outboxes = (
                 await session.scalars(
-                    select(orm.DispositionOutbox).where(
-                        orm.DispositionOutbox.event_id == event_id
-                    )
+                    select(orm.DispositionOutbox).where(orm.DispositionOutbox.event_id == event_id)
                 )
             ).all()
             writeback_summary = await self._context_store.get(event_id, "writeback_summary")
