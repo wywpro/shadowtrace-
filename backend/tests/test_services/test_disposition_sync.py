@@ -293,6 +293,62 @@ def _sync_service(
 
 
 @pytest.mark.asyncio
+async def test_get_disposition_by_id(
+    session_factory: async_sessionmaker[AsyncSession],
+    store: EventContextStore,
+    mock_xdr_client: httpx.AsyncClient,
+    cleanup: None,
+) -> None:
+    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
+        session_factory, store
+    )
+    sync = _sync_service(session_factory, store, mock_xdr_client)
+    factory = DispositionCommandFactory()
+    disposition_id = new_disposition_id()
+    action = Action.model_validate(
+        {
+            "action_id": action_id,
+            "event_id": event_id,
+            "plan_revision": 1,
+            "action_fingerprint": "fp-get",
+            "action_category": ActionCategory.RESPONSE,
+            "action_name": "block ip",
+            "tool_name": "block_ip",
+            "action_level": ActionLevel.L2,
+            "execution_owner": ExecutionOwner.XDR_MANAGED,
+            "status": ActionStatus.EXECUTING,
+            "target": "203.0.113.88",
+            "writeback_required": True,
+            "writeback_applicable": True,
+            "writeback_readiness": WritebackReadiness.READY,
+            "disposition_source_ref": locator,
+            "idempotency_key": f"idem-{_sfx()}",
+        }
+    )
+    command = factory.build_entity_action_submit(
+        action,
+        source_locator=locator,
+        source_concurrency_token="tok-1",
+        operator_id="ActionExecutionService",
+        disposition_id=disposition_id,
+        writeback_id="pending",
+        closure_cycle=1,
+        entity_action_code="block_ip",
+    )
+    async with session_factory() as session:
+        async with session.begin():
+            await sync.enqueue_command(
+                session,
+                command=command,
+                event_id=event_id,
+                source_record_id=source_record_id,
+            )
+    loaded, status = await sync.get_disposition(disposition_id)
+    assert loaded.disposition_id == disposition_id
+    assert status is None or isinstance(status, WritebackStatus)
+
+
+@pytest.mark.asyncio
 async def test_enqueue_and_deliver_outbox(
     session_factory: async_sessionmaker[AsyncSession],
     store: EventContextStore,

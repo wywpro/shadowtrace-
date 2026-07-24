@@ -217,16 +217,6 @@ class ActionExecutionService:
         self, action_id: str, *, operator: str = _EXECUTION_OPERATOR
     ) -> Action:
         claimed = await self._claim_action(action_id)
-        if claimed.tool_name == TERMINAL_DISPOSITION_TOOL:
-            raise ValidationError(
-                "POST_VERIFY deferred actions are not executed by execute_plan",
-                details={"action_id": action_id},
-            )
-        if claimed.execution_phase is ActionExecutionPhase.POST_VERIFY:
-            raise ValidationError(
-                "POST_VERIFY actions must remain APPROVED until ISSUE-059A",
-                details={"action_id": action_id},
-            )
         if claimed.execution_owner is ExecutionOwner.XDR_MANAGED:
             await self._execute_xdr_managed(claimed, operator=operator)
         elif claimed.execution_owner is ExecutionOwner.DIRECT_TOOL:
@@ -404,6 +394,19 @@ class ActionExecutionService:
                         "action is not claimable",
                         current=action.status,
                         target=ActionStatus.EXECUTING,
+                    )
+                if action.execution_phase is ActionExecutionPhase.POST_VERIFY:
+                    raise ValidationError(
+                        "POST_VERIFY actions must remain APPROVED until ISSUE-059A",
+                        details={
+                            "action_id": action_id,
+                            "execution_phase": action.execution_phase.value,
+                        },
+                    )
+                if action.tool_name == TERMINAL_DISPOSITION_TOOL:
+                    raise ValidationError(
+                        "POST_VERIFY deferred actions are not executed by execute_plan",
+                        details={"action_id": action_id},
                     )
                 if action.execution_phase is not ActionExecutionPhase.IMMEDIATE:
                     raise ValidationError(

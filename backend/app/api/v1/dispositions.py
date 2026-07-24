@@ -19,7 +19,6 @@ from app.core.auth import (
     Principal,
     require_roles,
 )
-from app.core.errors import EventNotFoundError
 from app.models.enums import ConfirmationEvidence, WritebackStatus
 
 router = APIRouter(tags=["dispositions"])
@@ -47,11 +46,8 @@ async def get_disposition(
     principal: CurrentPrincipal,
     sync: DispositionSyncDep,
 ) -> s.DispositionResponse:
-    # disposition_id maps to the outbox command's disposition_id field.
-    raise EventNotFoundError(
-        f"disposition {disposition_id} not found",
-        details={"disposition_id": disposition_id},
-    )
+    command, status = await sync.get_disposition(disposition_id)
+    return s.DispositionResponse(disposition=command, writeback_status=status)
 
 
 @router.get("/writebacks/{writeback_id}", response_model=s.WritebackResponse)

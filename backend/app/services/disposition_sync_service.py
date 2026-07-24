@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.adapters.disposition.base import BaseDispositionAdapter
@@ -366,6 +366,28 @@ class DispositionSyncService:
             items.append((command, status))
         return items
 
+    async def get_disposition(
+        self, disposition_id: str
+    ) -> tuple[DispositionCommand, WritebackStatus | None]:
+        async with self._session_factory() as session:
+            outbox = await session.scalar(
+                select(orm.DispositionOutbox).where(
+                    orm.DispositionOutbox.disposition_id == disposition_id
+                )
+            )
+        if outbox is None:
+            raise EventNotFoundError(
+                f"disposition not found: {disposition_id}",
+                details={"disposition_id": disposition_id},
+            )
+        command = DispositionCommand.model_validate(outbox.command_payload)
+        status = (
+            WritebackStatus(outbox.latest_writeback_status)
+            if outbox.latest_writeback_status
+            else None
+        )
+        return command, status
+
     async def process_ready_outboxes(self, *, limit: int = 10) -> int:
         return await OutboxWorker(self).run_once(limit=limit)
 
@@ -595,11 +617,19 @@ class OutboxWorker:
                     await session.scalars(
                         select(orm.DispositionOutbox)
                         .where(
-                            orm.DispositionOutbox.delivery_status.in_(
-                                (
-                                    OutboxDeliveryStatus.READY.value,
-                                    OutboxDeliveryStatus.WAITING_RETRY.value,
-                                )
+                            or_(
+                                orm.DispositionOutbox.delivery_status.in_(
+                                    (
+                                        OutboxDeliveryStatus.READY.value,
+                                        OutboxDeliveryStatus.WAITING_RETRY.value,
+                                    )
+                                ),
+                                and_(
+                                    orm.DispositionOutbox.delivery_status
+                                    == OutboxDeliveryStatus.LEASED.value,
+                                    orm.DispositionOutbox.lease_expires_at.is_not(None),
+                                    orm.DispositionOutbox.lease_expires_at < now,
+                                ),
                             )
                         )
                         .order_by(orm.DispositionOutbox.created_at.asc())
@@ -608,8 +638,23 @@ class OutboxWorker:
                     )
                 ).all()
                 for row in rows:
+                    current = OutboxDeliveryStatus(row.delivery_status)
+                    if (
+                        current is OutboxDeliveryStatus.LEASED
+                        and row.lease_expires_at is not None
+                        and row.lease_expires_at < now
+                    ):
+                        validate_outbox_delivery_transition(
+                            OutboxDeliveryStatus.LEASED,
+                            OutboxDeliveryStatus.WAITING_RETRY,
+                        )
+                        row.delivery_status = OutboxDeliveryStatus.WAITING_RETRY.value
+                        row.locked_by = None
+                        row.locked_at = None
+                        row.lease_expires_at = None
+                        current = OutboxDeliveryStatus.WAITING_RETRY
                     validate_outbox_delivery_transition(
-                        OutboxDeliveryStatus(row.delivery_status),
+                        current,
                         OutboxDeliveryStatus.LEASED,
                     )
                     row.delivery_status = OutboxDeliveryStatus.LEASED.value

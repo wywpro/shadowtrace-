@@ -13,15 +13,23 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.api.v1 import schemas as s
+from app.api.v1.deps import get_disposition_sync as _real_get_disposition_sync
 from app.api.v1.deps import get_event_service as _real_get_event_service
 from app.api.v1.deps import get_state_machine as _real_get_state_machine
 from app.api.v1.errors import register_exception_handlers
-from app.core.errors import ValidationError as DomainValidationError
+from app.core.errors import (
+    EventNotFoundError,
+    WritebackConflictError,
+)
+from app.core.errors import (
+    ValidationError as DomainValidationError,
+)
 from app.main import app
 from app.models.disposition import DispositionCommand
 from app.models.enums import (
     DispositionPolicy,
     EventStatus,
+    WritebackStatus,
 )
 
 # (method, path) pairs for every core endpoint in intro §4.2.2.
@@ -83,6 +91,11 @@ def client() -> TestClient:
     mock_es = _MockEventService()
     app.dependency_overrides[_real_get_event_service] = lambda: mock_es
     app.dependency_overrides[_real_get_state_machine] = lambda: _MockStateMachine()
+
+    async def _mock_disposition_sync() -> _MockDispositionSyncService:
+        return _MockDispositionSyncService()
+
+    app.dependency_overrides[_real_get_disposition_sync] = _mock_disposition_sync
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -147,6 +160,125 @@ class _MockEventService:
         evt = self._example_event()
         evt.status = target
         return evt
+
+
+class _MockDispositionSyncService:
+    """In-memory disposition sync stub for contract/authz tests (no DB)."""
+
+    _KNOWN_DISPOSITIONS = frozenset({"disp-0a1b2c3d"})
+    _KNOWN_WRITEBACKS: dict[str, WritebackStatus] = {
+        "wbk-0a1b2c3d": WritebackStatus.CONFIRMED,
+        "wbk-unknown": WritebackStatus.UNKNOWN,
+    }
+
+    async def list_event_dispositions(
+        self, event_id: str
+    ) -> list[tuple[DispositionCommand, WritebackStatus | None]]:
+        _ = event_id
+        return [(s.example_disposition_command(), WritebackStatus.CONFIRMED)]
+
+    async def get_disposition(
+        self, disposition_id: str
+    ) -> tuple[DispositionCommand, WritebackStatus | None]:
+        if disposition_id not in self._KNOWN_DISPOSITIONS:
+            raise EventNotFoundError(
+                f"disposition {disposition_id} not found",
+                details={"disposition_id": disposition_id},
+            )
+        return s.example_disposition_command(), WritebackStatus.CONFIRMED
+
+    async def get_writeback(self, writeback_id: str) -> tuple[Any, Any]:
+        status = self._KNOWN_WRITEBACKS.get(writeback_id)
+        if status is None:
+            raise EventNotFoundError(
+                f"writeback {writeback_id} not found",
+                details={"writeback_id": writeback_id},
+            )
+        command = s.example_disposition_command()
+        from app.models.disposition import DispositionReceipt
+        from app.models.enums import ConfirmationEvidence
+
+        receipt = DispositionReceipt(
+            writeback_id=writeback_id,
+            sequence=1,
+            disposition_id=command.disposition_id,
+            action_id=command.action_id,
+            source_record_id="src-associated-1",
+            status=status,
+            confirmation_evidence=(
+                ConfirmationEvidence.READBACK_VERIFIED
+                if status is WritebackStatus.CONFIRMED
+                else None
+            ),
+        )
+        from app.models.disposition import DispositionOutboxRecord
+
+        record = DispositionOutboxRecord.model_validate(
+            {
+                "outbox_id": "obx-contract-1",
+                "writeback_id": writeback_id,
+                "disposition_id": command.disposition_id,
+                "action_id": command.action_id,
+                "event_id": s.EXAMPLE_EVENT_ID,
+                "closure_cycle": 1,
+                "source_record_id": "src-associated-1",
+                "source_locator_hash": "hash",
+                "source_sequence": 1,
+                "intent_kind": command.intent_kind.value,
+                "logical_slot": "default",
+                "idempotency_key": command.idempotency_key,
+                "command_payload": command.model_dump(mode="json"),
+                "command_payload_sha256": "deadbeef",
+                "delivery_status": "delivered",
+                "latest_writeback_status": status.value,
+            }
+        )
+        return record, receipt
+
+    async def retry_writeback(self, writeback_id: str, *, operator: str) -> WritebackStatus:
+        _ = operator
+        status = self._KNOWN_WRITEBACKS.get(writeback_id)
+        if status is None:
+            raise EventNotFoundError(
+                f"writeback {writeback_id} not found",
+                details={"writeback_id": writeback_id},
+            )
+        if status is WritebackStatus.UNKNOWN:
+            raise WritebackConflictError(
+                "writeback is UNKNOWN and must be verified before retry",
+                details={"writeback_id": writeback_id, "status": status.value},
+            )
+        return WritebackStatus.PENDING
+
+    async def resolve_writeback(
+        self,
+        writeback_id: str,
+        resolution: str,
+        *,
+        principal: str,
+        comment: str,
+        evidence_ref: str | None = None,
+    ) -> WritebackStatus:
+        _ = (principal, comment)
+        if writeback_id not in self._KNOWN_WRITEBACKS:
+            raise EventNotFoundError(
+                f"writeback {writeback_id} not found",
+                details={"writeback_id": writeback_id},
+            )
+        if resolution == "manual_confirmed" and not evidence_ref:
+            raise DomainValidationError(
+                "manual_confirmed requires evidence_ref",
+                details={"writeback_id": writeback_id},
+            )
+        return (
+            WritebackStatus.CONFIRMED
+            if resolution == "manual_confirmed"
+            else WritebackStatus.FAILED
+        )
+
+    async def process_ready_outboxes(self, *, limit: int = 10) -> int:
+        _ = limit
+        return 0
 
 
 class _MockStateMachine:
