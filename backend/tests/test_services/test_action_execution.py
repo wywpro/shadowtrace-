@@ -419,6 +419,10 @@ async def test_empty_immediate_transitions_to_verifying(
     assert summary.action_counts.get(ActionStatus.APPROVED.value, 0) == 1
 
 
+# Mock XDR scenario fixture incident id (insider_data_exfiltration seed=42).
+_MOCK_SCENARIO_INCIDENT_ID = "88442201"
+
+
 @pytest.mark.asyncio
 async def test_xdr_managed_execute_plan_submits_outbox(
     session_factory: async_sessionmaker[AsyncSession],
@@ -426,7 +430,7 @@ async def test_xdr_managed_execute_plan_submits_outbox(
     execution_service: ActionExecutionService,
     cleanup: None,
 ) -> None:
-    oid = f"INC-{_sfx()}"
+    oid = _MOCK_SCENARIO_INCIDENT_ID
     await _seed_connector_and_source(session_factory, object_id=oid)
     event_id = await _create_event(session_factory, store, object_id=oid)
     action = await _insert_action(
@@ -575,7 +579,7 @@ async def test_direct_tool_enqueue_execution_result_record(
     execution_service: ActionExecutionService,
     cleanup: None,
 ) -> None:
-    oid = f"INC-{_sfx()}"
+    oid = _MOCK_SCENARIO_INCIDENT_ID
     await _seed_connector_and_source(session_factory, object_id=oid)
     event_id = await _create_event(session_factory, store, object_id=oid)
     action = await _insert_action(

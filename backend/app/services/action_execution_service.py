@@ -339,7 +339,7 @@ class ActionExecutionService:
             idempotency_key=idempotency_key,
             execution_owner=ExecutionOwner.DIRECT_TOOL,
         )
-        job = await self._job_store.get_job(job_id)
+        job = await self._finalize_mock_direct_tool_job(job_id)
         if job is None:
             return
         terminal = job.status
@@ -379,6 +379,23 @@ class ActionExecutionService:
                         event_id=action.event_id,
                         source_record_id=source_record_id,
                     )
+
+    async def _finalize_mock_direct_tool_job(self, job_id: str) -> ActionExecutionJob | None:
+        """Run mock async Provider jobs to terminal before writeback enqueue (ISSUE-059 P0)."""
+        job = await self._job_store.get_job(job_id)
+        if job is None:
+            return None
+        if job.status not in {ExecutionJobStatus.QUEUED, ExecutionJobStatus.RUNNING}:
+            return job
+        settings = get_settings()
+        tool_mode = settings.tool_mode.strip().lower()
+        if "mock" not in tool_mode or not settings.simulation_enabled:
+            return job
+        from app.providers.tools.mock_provider import get_mock_tool_provider
+
+        completed = await get_mock_tool_provider().run_job(job_id)
+        await self._job_store.cas_update_job(job_id, completed, expected_status=job.status)
+        return completed
 
     async def _claim_action(self, action_id: str) -> Action:
         async with self._session_factory() as session:

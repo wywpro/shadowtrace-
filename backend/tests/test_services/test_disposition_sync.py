@@ -191,7 +191,7 @@ async def _seed_event_action_source(
     action_id = f"act-{sfx}"
     connector_id = "conn-disposition"
     source_record_id = f"src-{sfx}"
-    object_id = f"INC-{sfx}"
+    object_id = "88442201"  # insider_data_exfiltration scenario incident (mock XDR ASGI)
     locator = _locator(object_id=object_id)
     ref = SourceReference(
         source_kind=SourceObjectKind.INCIDENT,

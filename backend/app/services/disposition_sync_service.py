@@ -184,12 +184,10 @@ class DispositionSyncService:
                     else WritebackStatus.PENDING
                 )
                 if latest is WritebackStatus.UNKNOWN:
-                    adapter = self._resolve_adapter(outbox)
-                    if not adapter.capabilities().supports_lookup_by_idempotency:
-                        raise WritebackConflictError(
-                            "UNKNOWN writeback must be verified before retry",
-                            details={"writeback_id": writeback_id},
-                        )
+                    raise WritebackConflictError(
+                        "UNKNOWN writeback must be verified before retry",
+                        details={"writeback_id": writeback_id, "status": latest.value},
+                    )
                 validate_outbox_delivery_transition(
                     OutboxDeliveryStatus(outbox.delivery_status),
                     OutboxDeliveryStatus.READY,
