@@ -101,7 +101,14 @@ class ActionRejectRequest(_StrictRequest):
 
 
 class ResolveUnknownRequest(_StrictRequest):
-    resolution: Literal["mark_success", "mark_failed", "manual_confirmed"]
+    resolution: Literal[
+        "success",
+        "partial_success",
+        "failed",
+        "mark_success",
+        "mark_failed",
+        "manual_confirmed",
+    ]
     comment: str
     evidence_ref: str | None = None
 

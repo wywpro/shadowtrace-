@@ -544,3 +544,145 @@ async def test_resume_hook_called_on_terminal_writeback(
         evidence_ref="evidence://ok",
     )
     resume.assert_awaited_once_with(event_id)
+
+
+@pytest.mark.asyncio
+async def test_outbound_guard_blocks_non_allowlisted_field(
+    session_factory: async_sessionmaker[AsyncSession],
+    store: EventContextStore,
+    mock_xdr_client: httpx.AsyncClient,
+    cleanup: None,
+) -> None:
+    from app.core.errors import GuardrailViolationError
+    from app.core.guardrails import OutboundDispositionGuard
+
+    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
+        session_factory, store
+    )
+    factory = DispositionCommandFactory()
+    action = Action.model_validate(
+        {
+            "action_id": action_id,
+            "event_id": event_id,
+            "plan_revision": 1,
+            "action_fingerprint": "fp-guard",
+            "action_category": ActionCategory.RESPONSE,
+            "action_name": "block ip",
+            "tool_name": "block_ip",
+            "action_level": ActionLevel.L2,
+            "execution_owner": ExecutionOwner.XDR_MANAGED,
+            "status": ActionStatus.EXECUTING,
+            "target": "203.0.113.88",
+            "writeback_required": True,
+            "writeback_applicable": True,
+            "writeback_readiness": WritebackReadiness.READY,
+            "disposition_source_ref": locator,
+            "idempotency_key": f"idem-{_sfx()}",
+        }
+    )
+    command = factory.build_entity_action_submit(
+        action,
+        source_locator=locator,
+        source_concurrency_token="tok-1",
+        operator_id="ActionExecutionService",
+        disposition_id=new_disposition_id(),
+        writeback_id="pending",
+        closure_cycle=1,
+        entity_action_code="block_ip",
+    )
+    payload = command.model_dump(mode="json")
+    payload["reason"] = "analysis leak"
+    guard = OutboundDispositionGuard()
+    with pytest.raises(GuardrailViolationError):
+        await guard.validate(payload, {"event_id": event_id, "approved_action_ids": [action_id]})
+
+
+@pytest.mark.asyncio
+async def test_expired_lease_outbox_reclaimed(
+    session_factory: async_sessionmaker[AsyncSession],
+    store: EventContextStore,
+    mock_xdr_client: httpx.AsyncClient,
+    cleanup: None,
+) -> None:
+    from datetime import timedelta
+
+    from app.models.enums import OutboxDeliveryStatus
+    from app.services.disposition_sync_service import OutboxWorker
+
+    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
+        session_factory, store
+    )
+    sync = _sync_service(session_factory, store, mock_xdr_client)
+    outbox_id = f"obx-{_sfx()}"
+    expired = datetime.now(UTC) - timedelta(minutes=5)
+    async with session_factory() as session:
+        async with session.begin():
+            session.add(
+                orm.DispositionOutbox(
+                    outbox_id=outbox_id,
+                    writeback_id=f"wbk-{_sfx()}",
+                    disposition_id=f"disp-{_sfx()}",
+                    action_id=action_id,
+                    event_id=event_id,
+                    closure_cycle=1,
+                    source_record_id=source_record_id,
+                    source_locator_hash="hash",
+                    source_sequence=1,
+                    intent_kind="entity_action_submit",
+                    logical_slot="default",
+                    idempotency_key=f"idem-{_sfx()}",
+                    command_payload={
+                        **factory_build_min_command(action_id, event_id, locator),
+                    },
+                    command_payload_sha256="deadbeef",
+                    delivery_status=OutboxDeliveryStatus.LEASED.value,
+                    locked_by="stale-worker",
+                    locked_at=expired,
+                    lease_expires_at=expired,
+                )
+            )
+    worker = OutboxWorker(sync)
+    claimed = await worker.run_once(limit=1)
+    assert claimed == 1
+    async with session_factory() as session:
+        row = await session.get(orm.DispositionOutbox, outbox_id)
+        assert row is not None
+        assert row.delivery_status in {
+            OutboxDeliveryStatus.DELIVERED.value,
+            OutboxDeliveryStatus.LEASED.value,
+        }
+
+
+def factory_build_min_command(action_id: str, event_id: str, locator: SourceObjectLocator) -> dict:
+    factory = DispositionCommandFactory()
+    action = Action.model_validate(
+        {
+            "action_id": action_id,
+            "event_id": event_id,
+            "plan_revision": 1,
+            "action_fingerprint": "fp-min",
+            "action_category": ActionCategory.RESPONSE,
+            "action_name": "block ip",
+            "tool_name": "block_ip",
+            "action_level": ActionLevel.L2,
+            "execution_owner": ExecutionOwner.XDR_MANAGED,
+            "status": ActionStatus.EXECUTING,
+            "target": "203.0.113.88",
+            "writeback_required": True,
+            "writeback_applicable": True,
+            "writeback_readiness": WritebackReadiness.READY,
+            "disposition_source_ref": locator,
+            "idempotency_key": f"idem-{action_id}",
+        }
+    )
+    command = factory.build_entity_action_submit(
+        action,
+        source_locator=locator,
+        source_concurrency_token="tok-1",
+        operator_id="ActionExecutionService",
+        disposition_id=new_disposition_id(),
+        writeback_id="pending",
+        closure_cycle=1,
+        entity_action_code="block_ip",
+    )
+    return command.model_dump(mode="json")

@@ -437,6 +437,7 @@ class ActionExecutionService:
                             "writeback_readiness": action.writeback_readiness.value,
                         },
                     )
+                await self._validate_claim_preconditions(session, action)
                 validate_action_status_transition(
                     action.action_category,
                     ActionStatus.APPROVED,
@@ -473,6 +474,50 @@ class ActionExecutionService:
                 select(func.max(orm.Action.plan_revision)).where(orm.Action.event_id == event_id)
             )
         return int(value or 1)
+
+    async def _validate_claim_preconditions(
+        self,
+        session: AsyncSession,
+        action: Action,
+    ) -> None:
+        settings = get_settings()
+        if settings.allow_live_side_effects:
+            raise ValidationError(
+                "live side effects are disabled in ISSUE-059 P0",
+                details={"allow_live_side_effects": True, "action_id": action.action_id},
+            )
+        if action.execution_owner is ExecutionOwner.XDR_MANAGED:
+            disposition_mode = settings.disposition_mode.strip().lower()
+            if "mock" not in disposition_mode and not settings.allow_xdr_writeback:
+                raise ValidationError(
+                    "xdr writeback is not enabled for live disposition mode",
+                    details={
+                        "action_id": action.action_id,
+                        "disposition_mode": settings.disposition_mode,
+                    },
+                )
+        if action.disposition_source_ref is None:
+            if action.writeback_applicable or action.execution_owner is ExecutionOwner.XDR_MANAGED:
+                raise ValidationError(
+                    "action missing disposition_source_ref at claim time",
+                    details={"action_id": action.action_id},
+                )
+            return
+        locator = SourceObjectLocator.model_validate(action.disposition_source_ref)
+        source = await session.scalar(
+            select(orm.SourceObject).where(
+                orm.SourceObject.source_product == locator.source_product,
+                orm.SourceObject.source_tenant_id == locator.source_tenant_id,
+                orm.SourceObject.connector_id == locator.connector_id,
+                orm.SourceObject.source_kind == locator.source_kind.value,
+                orm.SourceObject.source_object_id == locator.source_object_id,
+            )
+        )
+        if source is None:
+            raise ValidationError(
+                "source object not found at claim time",
+                details={"action_id": action.action_id},
+            )
 
     async def _resolve_source(self, action: Action) -> tuple[SourceObjectLocator, str]:
         if action.disposition_source_ref is None:
@@ -520,7 +565,20 @@ class ActionExecutionService:
                     )
                 )
             ).all()
+            outboxes = (
+                await session.scalars(
+                    select(orm.DispositionOutbox).where(
+                        orm.DispositionOutbox.event_id == event_id
+                    )
+                )
+            ).all()
             writeback_summary = await self._context_store.get(event_id, "writeback_summary")
+        writeback_counts: Counter[str] = Counter()
+        writeback_ids: list[str] = []
+        for outbox in outboxes:
+            writeback_ids.append(outbox.writeback_id)
+            if outbox.latest_writeback_status:
+                writeback_counts[outbox.latest_writeback_status] += 1
         counts = Counter(ActionStatus(row.status).value for row in actions)
         action_views = [
             ExecutionActionView(
@@ -542,6 +600,8 @@ class ActionExecutionService:
             action_counts=dict(counts),
             jobs=[_job_from_row(job) for job in jobs],
             actions=action_views,
+            writeback_counts=dict(writeback_counts),
+            writeback_ids=writeback_ids,
             writeback_summary=writeback_summary,
             updated_at=datetime.now(UTC),
         )

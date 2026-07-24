@@ -7,6 +7,7 @@ Requires Compose PostgreSQL (+ Redis for context). Run from ``backend/``:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -519,3 +520,119 @@ async def test_resolve_unknown_requires_unknown_status(
             principal="admin-1",
             comment="n/a",
         )
+
+
+@pytest.mark.asyncio
+async def test_resolve_unknown_partial_success(
+    session_factory: async_sessionmaker[AsyncSession],
+    store: EventContextStore,
+    execution_service: ActionExecutionService,
+    cleanup: None,
+) -> None:
+    event_id = await _create_event(session_factory, store)
+    action = await _insert_action(
+        session_factory,
+        event_id,
+        _action_model(event_id=event_id, status=ActionStatus.UNKNOWN),
+    )
+    resolved = await execution_service.resolve_unknown(
+        action.action_id,
+        "partial_success",
+        principal="admin-1",
+        comment="partially effective",
+    )
+    assert resolved.status is ActionStatus.PARTIAL_SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_claim_rejected_when_writeback_not_ready(
+    session_factory: async_sessionmaker[AsyncSession],
+    store: EventContextStore,
+    execution_service: ActionExecutionService,
+    cleanup: None,
+) -> None:
+    oid = f"INC-{_sfx()}"
+    await _seed_connector_and_source(session_factory, object_id=oid)
+    event_id = await _create_event(session_factory, store, object_id=oid)
+    action = await _insert_action(
+        session_factory,
+        event_id,
+        _action_model(
+            event_id=event_id,
+            execution_owner=ExecutionOwner.XDR_MANAGED,
+            disposition_source_ref=_locator(object_id=oid),
+            writeback_readiness=WritebackReadiness.CONNECTOR_UNAVAILABLE,
+        ),
+    )
+    with pytest.raises(ValidationError, match="writeback readiness blocks"):
+        await execution_service.execute_action(action.action_id)
+
+
+@pytest.mark.asyncio
+async def test_direct_tool_enqueue_execution_result_record(
+    session_factory: async_sessionmaker[AsyncSession],
+    store: EventContextStore,
+    execution_service: ActionExecutionService,
+    cleanup: None,
+) -> None:
+    oid = f"INC-{_sfx()}"
+    await _seed_connector_and_source(session_factory, object_id=oid)
+    event_id = await _create_event(session_factory, store, object_id=oid)
+    action = await _insert_action(
+        session_factory,
+        event_id,
+        _action_model(
+            event_id=event_id,
+            execution_owner=ExecutionOwner.DIRECT_TOOL,
+            disposition_source_ref=_locator(object_id=oid),
+            target="203.0.113.88",
+            parameters={"target_type": "ip", "target": "203.0.113.88"},
+        ),
+    )
+    summary = await execution_service.execute_plan(event_id)
+    async with session_factory() as session:
+        jobs = (
+            await session.scalars(
+                select(orm.ActionExecutionJob).where(
+                    orm.ActionExecutionJob.action_id == action.action_id
+                )
+            )
+        ).all()
+        outboxes = (
+            await session.scalars(
+                select(orm.DispositionOutbox).where(orm.DispositionOutbox.event_id == event_id)
+            )
+        ).all()
+    assert jobs
+    assert any(o.intent_kind == "execution_result_record" for o in outboxes)
+    assert summary.writeback_ids
+
+
+@pytest.mark.asyncio
+async def test_concurrent_claim_single_winner(
+    session_factory: async_sessionmaker[AsyncSession],
+    store: EventContextStore,
+    execution_service: ActionExecutionService,
+    cleanup: None,
+) -> None:
+    oid = f"INC-{_sfx()}"
+    await _seed_connector_and_source(session_factory, object_id=oid)
+    event_id = await _create_event(session_factory, store, object_id=oid)
+    action = await _insert_action(
+        session_factory,
+        event_id,
+        _action_model(
+            event_id=event_id,
+            execution_owner=ExecutionOwner.XDR_MANAGED,
+            disposition_source_ref=_locator(object_id=oid),
+        ),
+    )
+    results = await asyncio.gather(
+        execution_service.execute_action(action.action_id),
+        execution_service.execute_action(action.action_id),
+        return_exceptions=True,
+    )
+    successes = [r for r in results if not isinstance(r, BaseException)]
+    failures = [r for r in results if isinstance(r, BaseException)]
+    assert len(successes) == 1
+    assert len(failures) == 1

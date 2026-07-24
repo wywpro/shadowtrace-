@@ -86,5 +86,7 @@ class ExecutionSummary(BaseModel):
     action_counts: dict[str, int] = Field(default_factory=dict)
     jobs: list[ActionExecutionJob] = Field(default_factory=list)
     actions: list[ExecutionActionView] = Field(default_factory=list)
+    writeback_counts: dict[str, int] = Field(default_factory=dict)
+    writeback_ids: list[str] = Field(default_factory=list)
     writeback_summary: WritebackSummary | None = None
     updated_at: datetime | None = None
