@@ -57,6 +57,10 @@ from app.services.event_audit_log_service import EventAuditLogService
 from app.services.state_machine_service import StateMachineService
 from app.tools.executor import ToolExecutor
 from app.tools.registry import ToolRegistry
+from tests.test_services._mock_xdr_test_helpers import (
+    SCENARIO_INCIDENT_ID,
+    fetch_mock_concurrency_token,
+)
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get(
@@ -281,11 +285,15 @@ def _action_model(**overrides: object) -> Action:
 async def _seed_connector_and_source(
     session_factory: async_sessionmaker[AsyncSession],
     *,
-    object_id: str = "88442201",
+    object_id: str = SCENARIO_INCIDENT_ID,
+    mock_xdr_client: httpx.AsyncClient | None = None,
 ) -> str:
     sfx = _sfx()
     connector_id = "conn-disposition"
     source_record_id = f"src-{sfx}"
+    concurrency_token = "tok-1"
+    if mock_xdr_client is not None and object_id == SCENARIO_INCIDENT_ID:
+        concurrency_token = await fetch_mock_concurrency_token(mock_xdr_client, object_id=object_id)
     async with session_factory() as session:
         async with session.begin():
             existing = await session.get(orm.SourceConnector, connector_id)
@@ -305,7 +313,7 @@ async def _seed_connector_and_source(
                     connector_id=connector_id,
                     source_kind=SourceObjectKind.INCIDENT.value,
                     source_object_id=object_id,
-                    current_concurrency_token="tok-1",
+                    current_concurrency_token=concurrency_token,
                     next_outbox_sequence=0,
                 )
             )
@@ -419,19 +427,18 @@ async def test_empty_immediate_transitions_to_verifying(
     assert summary.action_counts.get(ActionStatus.APPROVED.value, 0) == 1
 
 
-# Mock XDR scenario fixture incident id (insider_data_exfiltration seed=42).
-_MOCK_SCENARIO_INCIDENT_ID = "88442201"
-
-
 @pytest.mark.asyncio
 async def test_xdr_managed_execute_plan_submits_outbox(
     session_factory: async_sessionmaker[AsyncSession],
     store: EventContextStore,
+    mock_xdr_client: httpx.AsyncClient,
     execution_service: ActionExecutionService,
     cleanup: None,
 ) -> None:
-    oid = _MOCK_SCENARIO_INCIDENT_ID
-    await _seed_connector_and_source(session_factory, object_id=oid)
+    oid = SCENARIO_INCIDENT_ID
+    await _seed_connector_and_source(
+        session_factory, object_id=oid, mock_xdr_client=mock_xdr_client
+    )
     event_id = await _create_event(session_factory, store, object_id=oid)
     action = await _insert_action(
         session_factory,
@@ -576,11 +583,14 @@ async def test_claim_rejected_when_writeback_not_ready(
 async def test_direct_tool_enqueue_execution_result_record(
     session_factory: async_sessionmaker[AsyncSession],
     store: EventContextStore,
+    mock_xdr_client: httpx.AsyncClient,
     execution_service: ActionExecutionService,
     cleanup: None,
 ) -> None:
-    oid = _MOCK_SCENARIO_INCIDENT_ID
-    await _seed_connector_and_source(session_factory, object_id=oid)
+    oid = SCENARIO_INCIDENT_ID
+    await _seed_connector_and_source(
+        session_factory, object_id=oid, mock_xdr_client=mock_xdr_client
+    )
     event_id = await _create_event(session_factory, store, object_id=oid)
     action = await _insert_action(
         session_factory,

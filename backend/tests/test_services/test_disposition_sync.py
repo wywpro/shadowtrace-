@@ -59,6 +59,10 @@ from app.services.context_service import (
 )
 from app.services.disposition_command_factory import DispositionCommandFactory
 from app.services.disposition_sync_service import DispositionSyncService
+from tests.test_services._mock_xdr_test_helpers import (
+    SCENARIO_INCIDENT_ID,
+    fetch_mock_concurrency_token,
+)
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DATABASE_URL = os.environ.get(
@@ -185,14 +189,16 @@ def _locator(*, object_id: str = "88442201") -> SourceObjectLocator:
 async def _seed_event_action_source(
     session_factory: async_sessionmaker[AsyncSession],
     store: EventContextStore,
-) -> tuple[str, str, str, SourceObjectLocator]:
+    mock_xdr_client: httpx.AsyncClient,
+) -> tuple[str, str, str, SourceObjectLocator, str]:
     sfx = _sfx()
     event_id = f"evt-sync-{sfx}"
     action_id = f"act-{sfx}"
     connector_id = "conn-disposition"
     source_record_id = f"src-{sfx}"
-    object_id = "88442201"  # insider_data_exfiltration scenario incident (mock XDR ASGI)
+    object_id = SCENARIO_INCIDENT_ID
     locator = _locator(object_id=object_id)
+    concurrency_token = await fetch_mock_concurrency_token(mock_xdr_client, object_id=object_id)
     ref = SourceReference(
         source_kind=SourceObjectKind.INCIDENT,
         source_product="mock_xdr",
@@ -220,7 +226,7 @@ async def _seed_event_action_source(
                     connector_id=connector_id,
                     source_kind=SourceObjectKind.INCIDENT.value,
                     source_object_id=object_id,
-                    current_concurrency_token="tok-1",
+                    current_concurrency_token=concurrency_token,
                     next_outbox_sequence=0,
                 )
             )
@@ -272,7 +278,7 @@ async def _seed_event_action_source(
                     idempotency_key=f"idem-{sfx}",
                 )
             )
-    return event_id, action_id, source_record_id, locator
+    return event_id, action_id, source_record_id, locator, concurrency_token
 
 
 def _sync_service(
@@ -305,9 +311,13 @@ async def test_get_disposition_by_id(
     mock_xdr_client: httpx.AsyncClient,
     cleanup: None,
 ) -> None:
-    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
-        session_factory, store
-    )
+    (
+        event_id,
+        action_id,
+        source_record_id,
+        locator,
+        concurrency_token,
+    ) = await _seed_event_action_source(session_factory, store, mock_xdr_client)
     sync = _sync_service(session_factory, store, mock_xdr_client)
     factory = DispositionCommandFactory()
     disposition_id = new_disposition_id()
@@ -334,7 +344,7 @@ async def test_get_disposition_by_id(
     command = factory.build_entity_action_submit(
         action,
         source_locator=locator,
-        source_concurrency_token="tok-1",
+        source_concurrency_token=concurrency_token,
         operator_id="ActionExecutionService",
         disposition_id=disposition_id,
         writeback_id="pending",
@@ -361,9 +371,13 @@ async def test_enqueue_and_deliver_outbox(
     mock_xdr_client: httpx.AsyncClient,
     cleanup: None,
 ) -> None:
-    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
-        session_factory, store
-    )
+    (
+        event_id,
+        action_id,
+        source_record_id,
+        locator,
+        concurrency_token,
+    ) = await _seed_event_action_source(session_factory, store, mock_xdr_client)
     sync = _sync_service(session_factory, store, mock_xdr_client)
     factory = DispositionCommandFactory()
     action = Action.model_validate(
@@ -389,7 +403,7 @@ async def test_enqueue_and_deliver_outbox(
     command = factory.build_entity_action_submit(
         action,
         source_locator=locator,
-        source_concurrency_token="tok-1",
+        source_concurrency_token=concurrency_token,
         operator_id="ActionExecutionService",
         disposition_id=new_disposition_id(),
         writeback_id="pending",
@@ -408,15 +422,28 @@ async def test_enqueue_and_deliver_outbox(
     delivered = await sync.process_ready_outboxes(limit=1)
     assert delivered == 1
     async with session_factory() as session:
+        outbox_row = await session.scalar(
+            select(orm.DispositionOutbox).where(orm.DispositionOutbox.outbox_id == record.outbox_id)
+        )
+        assert outbox_row is not None
+        assert outbox_row.delivery_status == "delivered"
         action_row = await session.get(orm.Action, action_id)
         assert action_row is not None
         assert action_row.status == ActionStatus.SUCCESS.value
+        assert action_row.writeback_status in {
+            WritebackStatus.ACCEPTED.value,
+            WritebackStatus.CONFIRMED.value,
+        }
         receipt = await session.scalar(
             select(orm.DispositionReceipt).where(
                 orm.DispositionReceipt.writeback_id == record.writeback_id
             )
         )
         assert receipt is not None
+        assert receipt.status in {
+            WritebackStatus.ACCEPTED.value,
+            WritebackStatus.CONFIRMED.value,
+        }
 
 
 @pytest.mark.asyncio
@@ -426,9 +453,13 @@ async def test_retry_unknown_writeback_rejected(
     mock_xdr_client: httpx.AsyncClient,
     cleanup: None,
 ) -> None:
-    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
-        session_factory, store
-    )
+    (
+        event_id,
+        action_id,
+        source_record_id,
+        locator,
+        concurrency_token,
+    ) = await _seed_event_action_source(session_factory, store, mock_xdr_client)
     sync = _sync_service(session_factory, store, mock_xdr_client)
     writeback_id = f"wbk-{_sfx()}"
     async with session_factory() as session:
@@ -464,9 +495,13 @@ async def test_resolve_writeback_manual_confirmed(
     mock_xdr_client: httpx.AsyncClient,
     cleanup: None,
 ) -> None:
-    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
-        session_factory, store
-    )
+    (
+        event_id,
+        action_id,
+        source_record_id,
+        locator,
+        concurrency_token,
+    ) = await _seed_event_action_source(session_factory, store, mock_xdr_client)
     writeback_id = f"wbk-{_sfx()}"
     async with session_factory() as session:
         async with session.begin():
@@ -508,9 +543,13 @@ async def test_resume_hook_called_on_terminal_writeback(
     mock_xdr_client: httpx.AsyncClient,
     cleanup: None,
 ) -> None:
-    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
-        session_factory, store
-    )
+    (
+        event_id,
+        action_id,
+        source_record_id,
+        locator,
+        concurrency_token,
+    ) = await _seed_event_action_source(session_factory, store, mock_xdr_client)
     resume = AsyncMock()
     sync = _sync_service(session_factory, store, mock_xdr_client, resume=resume)
     async with session_factory() as session:
@@ -562,9 +601,13 @@ async def test_outbound_guard_blocks_non_allowlisted_field(
     from app.core.errors import GuardrailViolationError
     from app.core.guardrails import OutboundDispositionGuard
 
-    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
-        session_factory, store
-    )
+    (
+        event_id,
+        action_id,
+        source_record_id,
+        locator,
+        concurrency_token,
+    ) = await _seed_event_action_source(session_factory, store, mock_xdr_client)
     factory = DispositionCommandFactory()
     action = Action.model_validate(
         {
@@ -589,7 +632,7 @@ async def test_outbound_guard_blocks_non_allowlisted_field(
     command = factory.build_entity_action_submit(
         action,
         source_locator=locator,
-        source_concurrency_token="tok-1",
+        source_concurrency_token=concurrency_token,
         operator_id="ActionExecutionService",
         disposition_id=new_disposition_id(),
         writeback_id="pending",
@@ -615,9 +658,13 @@ async def test_expired_lease_outbox_reclaimed(
     from app.models.enums import OutboxDeliveryStatus
     from app.services.disposition_sync_service import OutboxWorker
 
-    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
-        session_factory, store
-    )
+    (
+        event_id,
+        action_id,
+        source_record_id,
+        locator,
+        concurrency_token,
+    ) = await _seed_event_action_source(session_factory, store, mock_xdr_client)
     sync = _sync_service(session_factory, store, mock_xdr_client)
     outbox_id = f"obx-{_sfx()}"
     expired = datetime.now(UTC) - timedelta(minutes=5)
@@ -638,7 +685,9 @@ async def test_expired_lease_outbox_reclaimed(
                     logical_slot="default",
                     idempotency_key=f"idem-{_sfx()}",
                     command_payload={
-                        **factory_build_min_command(action_id, event_id, locator),
+                        **factory_build_min_command(
+                            action_id, event_id, locator, concurrency_token
+                        ),
                     },
                     command_payload_sha256="deadbeef",
                     delivery_status=OutboxDeliveryStatus.LEASED.value,
@@ -659,7 +708,12 @@ async def test_expired_lease_outbox_reclaimed(
         }
 
 
-def factory_build_min_command(action_id: str, event_id: str, locator: SourceObjectLocator) -> dict:
+def factory_build_min_command(
+    action_id: str,
+    event_id: str,
+    locator: SourceObjectLocator,
+    concurrency_token: str,
+) -> dict:
     factory = DispositionCommandFactory()
     action = Action.model_validate(
         {
@@ -684,7 +738,7 @@ def factory_build_min_command(action_id: str, event_id: str, locator: SourceObje
     command = factory.build_entity_action_submit(
         action,
         source_locator=locator,
-        source_concurrency_token="tok-1",
+        source_concurrency_token=concurrency_token,
         operator_id="ActionExecutionService",
         disposition_id=new_disposition_id(),
         writeback_id="pending",
