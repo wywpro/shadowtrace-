@@ -349,13 +349,14 @@ class ActionExecutionService:
                 assert action_row is not None
                 current = ActionStatus(action_row.status)
                 target = _map_job_to_action_status(terminal)
-                validate_action_status_transition(
-                    ActionCategory(action_row.action_category),
-                    current,
-                    target,
-                )
-                action_row.status = target.value
-                action_row.executed_at = datetime.now(UTC)
+                if target is not current:
+                    validate_action_status_transition(
+                        ActionCategory(action_row.action_category),
+                        current,
+                        target,
+                    )
+                    action_row.status = target.value
+                    action_row.executed_at = datetime.now(UTC)
         if action.writeback_applicable and terminal in {
             ExecutionJobStatus.SUCCESS,
             ExecutionJobStatus.PARTIAL_SUCCESS,

@@ -52,7 +52,11 @@ from app.models.enums import (
 )
 from app.models.ids import new_disposition_id
 from app.models.source import SourceReference
-from app.services.context_service import EventContextStore, append_context_journal_in_session
+from app.services.context_service import (
+    EventContextStore,
+    append_context_journal_in_session,
+    event_summary_from_security_event,
+)
 from app.services.disposition_command_factory import DispositionCommandFactory
 from app.services.disposition_sync_service import DispositionSyncService
 
@@ -220,6 +224,8 @@ async def _seed_event_action_source(
                     next_outbox_sequence=0,
                 )
             )
+    async with session_factory() as session:
+        async with session.begin():
             session.add(
                 orm.SecurityEvent(
                     event_id=event_id,
@@ -238,6 +244,12 @@ async def _seed_event_action_source(
                     occurred_at=datetime.now(UTC),
                 )
             )
+    async with session_factory() as session:
+        row = await session.get(orm.SecurityEvent, event_id)
+        assert row is not None
+        await store.init_context(event_id, event_summary_from_security_event(row))
+    async with session_factory() as session:
+        async with session.begin():
             session.add(
                 orm.Action(
                     action_id=action_id,
@@ -260,12 +272,6 @@ async def _seed_event_action_source(
                     idempotency_key=f"idem-{sfx}",
                 )
             )
-    async with session_factory() as session:
-        row = await session.get(orm.SecurityEvent, event_id)
-        assert row is not None
-        from app.services.context_service import event_summary_from_security_event
-
-        await store.init_context(event_id, event_summary_from_security_event(row))
     return event_id, action_id, source_record_id, locator
 
 

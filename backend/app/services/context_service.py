@@ -157,6 +157,39 @@ async def append_context_journal_in_session(
     return new_version
 
 
+def unwrap_journal_value(value: Any) -> Any:
+    if isinstance(value, dict) and set(value.keys()) == {"_scalar"}:
+        return value["_scalar"]
+    return value
+
+
+async def append_list_context_journal_in_session(
+    session: AsyncSession,
+    event_id: str,
+    field_name: str,
+    item: Any,
+) -> int:
+    """Append one element to a list-shaped EventContext field (full list re-written)."""
+    row = await session.scalar(
+        select(orm.EventContextJournal.value)
+        .where(
+            orm.EventContextJournal.event_id == event_id,
+            orm.EventContextJournal.field_name == field_name,
+        )
+        .order_by(orm.EventContextJournal.version.desc())
+        .limit(1)
+    )
+    items: list[Any] = []
+    if row is not None:
+        current = unwrap_journal_value(row)
+        if isinstance(current, list):
+            items = list(current)
+        elif current is not None:
+            items = [current]
+    items.append(_journal_value(item))
+    return await append_context_journal_in_session(session, event_id, field_name, items)
+
+
 def event_summary_from_security_event(row: orm.SecurityEvent) -> EventSummary:
     """Build the EventContext ``event`` field (EventSummary) from the ORM row."""
     policy = DispositionPolicy(row.disposition_policy)
@@ -617,9 +650,7 @@ class EventContextStore:
 
     @staticmethod
     def _unwrap_journal_value(value: Any) -> Any:
-        if isinstance(value, dict) and set(value.keys()) == {"_scalar"}:
-            return value["_scalar"]
-        return value
+        return unwrap_journal_value(value)
 
     async def _rebuild_from_journal(self, session: AsyncSession, event_id: str) -> EventContext:
         result = await session.execute(

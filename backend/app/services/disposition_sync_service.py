@@ -36,7 +36,11 @@ from app.models.workflow import (
     validate_outbox_delivery_transition,
     validate_writeback_status_transition,
 )
-from app.services.context_service import EventContextStore, append_context_journal_in_session
+from app.services.context_service import (
+    EventContextStore,
+    append_context_journal_in_session,
+    append_list_context_journal_in_session,
+)
 from app.services.disposition_command_factory import DispositionCommandFactory
 
 logger = logging.getLogger(__name__)
@@ -135,7 +139,7 @@ class DispositionSyncService:
         )
         session.add(outbox)
         await session.flush()
-        await append_context_journal_in_session(
+        await append_list_context_journal_in_session(
             session,
             event_id,
             "disposition_commands",
@@ -512,7 +516,7 @@ class DispositionSyncService:
                 simulated=parsed.simulated,
             )
         )
-        await append_context_journal_in_session(
+        await append_list_context_journal_in_session(
             session,
             outbox.event_id,
             "disposition_receipts",
