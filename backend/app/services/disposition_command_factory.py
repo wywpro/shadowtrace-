@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.agents.response_agent import compute_source_locator_hash
 from app.models.action import Action
 from app.models.disposition import (

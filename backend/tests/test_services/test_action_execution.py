@@ -218,8 +218,10 @@ async def cleanup(
                 orm.DispositionReceipt,
                 orm.DispositionOutbox,
                 orm.Action,
+                orm.Evidence,
+                orm.Report,
+                orm.SourceEventLink,
                 orm.SourceObject,
-                orm.SourceConnector,
                 orm.SecurityEvent,
             ):
                 await session.execute(delete(table))

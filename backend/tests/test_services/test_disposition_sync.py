@@ -150,11 +150,15 @@ async def cleanup(
                 orm.EventAuditLog,
                 orm.EventContextJournal,
                 orm.EventContextFieldVersion,
+                orm.ActionTargetResult,
+                orm.ActionExecutionJob,
                 orm.DispositionReceipt,
                 orm.DispositionOutbox,
                 orm.Action,
+                orm.Evidence,
+                orm.Report,
+                orm.SourceEventLink,
                 orm.SourceObject,
-                orm.SourceConnector,
                 orm.SecurityEvent,
             ):
                 await session.execute(delete(table))
