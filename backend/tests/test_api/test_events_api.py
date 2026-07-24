@@ -6,6 +6,7 @@ Tests the 11 core event endpoints with real database-backed services.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,7 +26,7 @@ from app.models.enums import (
 )
 from app.services.event_service import EventService
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("clean_state")]
 
 _DEV_TOKENS = json.dumps(
     {
@@ -116,7 +117,8 @@ async def _seed_reporting_required_event(
     from datetime import UTC, datetime
     from uuid import uuid4
 
-    from app.models.enums import DispositionIntentKind
+    from app.models.action import TERMINAL_DISPOSITION_TOOL
+    from app.models.enums import ActionExecutionPhase, DispositionIntentKind, SourceDisposition
 
     sfx = uuid4().hex[:8]
     event_id = f"evt-{sfx}"
@@ -160,7 +162,27 @@ async def _seed_reporting_required_event(
                     reason="test_setup:reporting",
                 )
             )
+            await session.flush()
             if include_action:
+                connector_id = f"conn-{sfx}"
+                source_record_id = f"src-{sfx}"
+                session.add(
+                    orm.SourceConnector(
+                        connector_id=connector_id,
+                        source_product="mock_xdr",
+                        display_name="Writeback test connector",
+                    )
+                )
+                session.add(
+                    orm.SourceObject(
+                        source_record_id=source_record_id,
+                        source_product="mock_xdr",
+                        source_tenant_id="t1",
+                        connector_id=connector_id,
+                        source_kind="incident",
+                        source_object_id=f"INC-{sfx}",
+                    )
+                )
                 session.add(
                     orm.Action(
                         action_id=f"act-{sfx}",
@@ -175,6 +197,11 @@ async def _seed_reporting_required_event(
                         writeback_required=True,
                         writeback_applicable=True,
                         writeback_readiness=writeback_readiness.value,
+                        writeback_status=(
+                            WritebackStatus.CONFIRMED.value
+                            if outbox_status is WritebackStatus.CONFIRMED
+                            else None
+                        ),
                     )
                 )
                 await session.flush()
@@ -187,7 +214,7 @@ async def _seed_reporting_required_event(
                             action_id=f"act-{sfx}",
                             event_id=event_id,
                             closure_cycle=1,
-                            source_record_id=f"src-{sfx}",
+                            source_record_id=source_record_id,
                             source_locator_hash="h" * 64,
                             source_sequence=1,
                             intent_kind=DispositionIntentKind.ENTITY_ACTION_SUBMIT.value,
@@ -199,6 +226,51 @@ async def _seed_reporting_required_event(
                             latest_writeback_status=outbox_status.value,
                         )
                     )
+                    if outbox_status is WritebackStatus.CONFIRMED:
+                        session.add(
+                            orm.Action(
+                                action_id=f"act-term-{sfx}",
+                                event_id=event_id,
+                                plan_revision=1,
+                                action_fingerprint=f"fp-term-{sfx}",
+                                action_category="response",
+                                action_name=TERMINAL_DISPOSITION_TOOL,
+                                tool_name="",
+                                action_level="l1",
+                                execution_owner="xdr_managed",
+                                execution_phase=ActionExecutionPhase.POST_VERIFY.value,
+                                writeback_required=True,
+                                writeback_applicable=True,
+                                writeback_readiness=WritebackReadiness.READY.value,
+                                writeback_status=WritebackStatus.CONFIRMED.value,
+                                approved_terminal_dispositions=[
+                                    SourceDisposition.CONTAINED.value
+                                ],
+                            )
+                        )
+                        await session.flush()
+                        session.add(
+                            orm.DispositionOutbox(
+                                outbox_id=f"obx-term-{sfx}",
+                                writeback_id=f"wbk-term-{sfx}",
+                                disposition_id=f"disp-term-{sfx}",
+                                action_id=f"act-term-{sfx}",
+                                event_id=event_id,
+                                closure_cycle=1,
+                                source_record_id=source_record_id,
+                                source_locator_hash="h" * 64,
+                                source_sequence=2,
+                                intent_kind=DispositionIntentKind.EVENT_STATUS_UPDATE.value,
+                                logical_slot="terminal",
+                                idempotency_key=f"idem-term-{sfx}",
+                                command_payload={
+                                    "target_disposition": SourceDisposition.CONTAINED.value
+                                },
+                                command_payload_sha256="b" * 64,
+                                delivery_status="delivered",
+                                latest_writeback_status=WritebackStatus.CONFIRMED.value,
+                            )
+                        )
             await session.flush()
     return event_id
 
@@ -299,7 +371,7 @@ async def test_create_event_returns_201(
                 "source_object_id": "ALT-99901",
                 "source_status_raw": "open",
                 "source_disposition": "pending",
-                "schema_version": 1,
+                "schema_version": "1",
             },
         },
         headers=_hdr(),
@@ -331,7 +403,7 @@ async def test_create_event_rejects_unknown_fields(
                 "source_object_id": "ALT-99902",
                 "source_status_raw": "open",
                 "source_disposition": "pending",
-                "schema_version": 1,
+                "schema_version": "1",
             },
         },
         headers=_hdr(),
@@ -399,6 +471,23 @@ async def test_get_event_returns_detail(
     assert data["event"]["title"] == "Detail test"
     assert "writeback_required" in data
     assert "writeback_readiness" in data
+
+
+@pytest.mark.asyncio
+async def test_get_event_surfaces_failed_writeback_status(
+    client: TestClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """FAILED outbox rows must appear in writeback_overall_status (not omitted)."""
+    event_id = await _seed_reporting_required_event(
+        session_factory,
+        outbox_status=WritebackStatus.FAILED,
+    )
+
+    resp = client.get(f"/api/v1/events/{event_id}", headers=_hdr())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["writeback_overall_status"] == WritebackStatus.FAILED.value
 
 
 @pytest.mark.asyncio
@@ -706,7 +795,7 @@ async def test_close_reporting_writeback_not_configured_rejected(
         json={"reason": "writeback gate test"},
         headers=_hdr(),
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 422
     assert resp.json()["error_code"] == "writeback_unsupported"
 
 
@@ -726,7 +815,7 @@ async def test_close_reporting_writeback_pending_rejected(
         json={"reason": "writeback pending test"},
         headers=_hdr(),
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 409
     assert resp.json()["error_code"] == "writeback_pending"
 
 
@@ -746,7 +835,7 @@ async def test_close_reporting_writeback_failed_rejected(
         json={"reason": "writeback failed test"},
         headers=_hdr(),
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 409
     assert resp.json()["error_code"] == "writeback_failed"
 
 
@@ -766,7 +855,7 @@ async def test_close_reporting_writeback_conflict_rejected(
         json={"reason": "writeback conflict test"},
         headers=_hdr(),
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 409
     assert resp.json()["error_code"] == "writeback_conflict"
 
 
@@ -787,7 +876,7 @@ async def test_close_reporting_writeback_unsupported_readiness_rejected(
         json={"reason": "writeback unsupported test"},
         headers=_hdr(),
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 422
     assert resp.json()["error_code"] == "writeback_unsupported"
 
 
@@ -807,7 +896,7 @@ async def test_close_reporting_writeback_unknown_rejected(
         json={"reason": "writeback unknown test"},
         headers=_hdr(),
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 409
     assert resp.json()["error_code"] == "writeback_pending"
 
 
@@ -930,7 +1019,7 @@ async def test_investigate_high_risk_http_polls_to_reporting(
         source_object_id="INC-HTTP-HIGH-001",
         source_status_raw="open",
         source_disposition=SourceDisposition.PENDING,
-        schema_version=1,
+        schema_version="1",
     )
     ingest = IngestableSource(
         reference=ref,
@@ -1072,6 +1161,83 @@ async def test_investigate_returns_202(
 
 
 # --------------------------------------------------------------------------- #
+# Helper: integration pipeline with tool executor + evidence projection
+# --------------------------------------------------------------------------- #
+
+
+def _build_integration_pipeline(
+    *,
+    event_service: EventService,
+    state_machine_service,
+    session_factory: async_sessionmaker[AsyncSession],
+    context_store: Any | None = None,
+):
+    """Build AnalysisOnlyPipeline wired like production deps (ISSUE-039)."""
+    from app.agents.evidence_agent import EvidenceAgent
+    from app.agents.rag_agent import RAGAgent
+    from app.agents.report_agent import ReportAgent
+    from app.agents.risk_agent import RiskAgent
+    from app.agents.triage_agent import TriageAgent
+    from app.core.config import get_settings
+    from app.core.redis_client import RedisClient
+    from app.services.analysis_only_pipeline import AnalysisOnlyPipeline
+    from app.services.context_service import EventContextStore
+    from app.services.degraded_flag_service import DegradedFlagService
+    from app.services.evidence_projection import EvidenceProjection, bind_evidence_projection
+    from app.services.working_memory import WorkingMemory
+    from app.tools.executor import get_tool_executor
+
+    settings = get_settings()
+    redis = RedisClient(url=settings.redis_url)
+    store = context_store or EventContextStore(redis, session_factory)
+    degraded = DegradedFlagService(store, session_factory)
+    wm = WorkingMemory(store=store, redis=redis, degraded_flags=degraded)
+    tool_executor = get_tool_executor()
+
+    triage = TriageAgent(
+        llm_client=None,
+        working_memory=wm.for_writer("TriageAgent"),
+    )
+    evidence = EvidenceAgent(
+        llm_client=None,
+        tool_executor=tool_executor,
+        working_memory=wm.for_writer("EvidenceAgent"),
+        event_service=event_service,
+        session_factory=session_factory,
+    )
+    rag = RAGAgent(
+        working_memory=wm.for_writer("RAGAgent"),
+        pipeline=None,
+    )
+    risk = RiskAgent(
+        llm_client=None,
+        working_memory=wm.for_writer("RiskAgent"),
+        event_service=event_service,
+        scenario_id="insider_data_exfiltration",
+    )
+    report = ReportAgent(
+        llm_client=None,
+        working_memory=wm.for_writer("ReportAgent"),
+        event_service=event_service,
+        scenario_id="insider_data_exfiltration",
+    )
+
+    pipeline = AnalysisOnlyPipeline(
+        event_service=event_service,
+        state_machine=state_machine_service,
+        triage_agent=triage,
+        evidence_agent=evidence,
+        rag_agent=rag,
+        risk_agent=risk,
+        report_agent=report,
+        context_store=store,
+        settings=settings,
+    )
+    projection = EvidenceProjection(session_factory)
+    return pipeline, projection, bind_evidence_projection, store
+
+
+# --------------------------------------------------------------------------- #
 # Conftest-level integration: run the full analysis pipeline end-to-end
 # --------------------------------------------------------------------------- #
 
@@ -1087,59 +1253,10 @@ async def test_full_analysis_pipeline_happy_path(
 
     For a not_required event, the pipeline should complete with the event CLOSED.
     """
-    from app.agents.evidence_agent import EvidenceAgent
-    from app.agents.rag_agent import RAGAgent
-    from app.agents.report_agent import ReportAgent
-    from app.agents.risk_agent import RiskAgent
-    from app.agents.triage_agent import TriageAgent
-    from app.core.config import get_settings
-    from app.core.redis_client import RedisClient
-    from app.services.analysis_only_pipeline import AnalysisOnlyPipeline
-    from app.services.context_service import EventContextStore
-    from app.services.degraded_flag_service import DegradedFlagService
-    from app.services.working_memory import WorkingMemory
-
-    settings = get_settings()
-
-    # Create a pipeline with test services.
-    redis = RedisClient(url=settings.redis_url)
-    store = EventContextStore(redis, session_factory)
-    degraded = DegradedFlagService(store, session_factory)
-    wm = WorkingMemory(store=store, redis=redis, degraded_flags=degraded)
-
-    triage = TriageAgent(
-        llm_client=None,
-        working_memory=wm.for_writer("TriageAgent"),
-    )
-    evidence = EvidenceAgent(
-        llm_client=None,
-        tool_executor=None,
-        working_memory=wm.for_writer("EvidenceAgent"),
-    )
-    rag = RAGAgent(
-        working_memory=wm.for_writer("RAGAgent"),
-        pipeline=None,
-    )
-    risk = RiskAgent(
-        llm_client=None,
-        working_memory=wm.for_writer("RiskAgent"),
+    pipeline, projection, bind_projection, _store = _build_integration_pipeline(
         event_service=event_service,
-    )
-    report = ReportAgent(
-        llm_client=None,
-        working_memory=wm.for_writer("ReportAgent"),
-        event_service=event_service,
-    )
-
-    pipeline = AnalysisOnlyPipeline(
-        event_service=event_service,
-        state_machine=state_machine_service,
-        triage_agent=triage,
-        evidence_agent=evidence,
-        rag_agent=rag,
-        risk_agent=risk,
-        report_agent=report,
-        context_store=store,
+        state_machine_service=state_machine_service,
+        session_factory=session_factory,
     )
 
     # Create a not_required low-severity event.
@@ -1153,8 +1270,8 @@ async def test_full_analysis_pipeline_happy_path(
     event_id = event.event_id
     assert event.status == EventStatus.NEW
 
-    # Run the pipeline directly (bypassing BackgroundTasks).
-    result = await pipeline.run(event_id)
+    with bind_projection(projection):
+        result = await pipeline.run(event_id)
 
     assert result.event_id == event_id
     assert result.analysis_only_complete is True
@@ -1173,65 +1290,15 @@ async def test_high_risk_event_stays_reporting(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """High-risk required events stay at REPORTING after analysis."""
-    from app.agents.evidence_agent import EvidenceAgent
-    from app.agents.rag_agent import RAGAgent
-    from app.agents.report_agent import ReportAgent
-    from app.agents.risk_agent import RiskAgent
-    from app.agents.triage_agent import TriageAgent
-    from app.core.config import get_settings
-    from app.core.redis_client import RedisClient
-    from app.services.analysis_only_pipeline import AnalysisOnlyPipeline
-    from app.services.context_service import EventContextStore
-    from app.services.degraded_flag_service import DegradedFlagService
-    from app.services.working_memory import WorkingMemory
-
-    settings = get_settings()
-
-    redis = RedisClient(url=settings.redis_url)
-    store = EventContextStore(redis, session_factory)
-    degraded = DegradedFlagService(store, session_factory)
-    wm = WorkingMemory(store=store, redis=redis, degraded_flags=degraded)
-
-    triage = TriageAgent(
-        llm_client=None,
-        working_memory=wm.for_writer("TriageAgent"),
-    )
-    evidence = EvidenceAgent(
-        llm_client=None,
-        tool_executor=None,
-        working_memory=wm.for_writer("EvidenceAgent"),
-    )
-    rag = RAGAgent(
-        working_memory=wm.for_writer("RAGAgent"),
-        pipeline=None,
-    )
-    risk = RiskAgent(
-        llm_client=None,
-        working_memory=wm.for_writer("RiskAgent"),
-        event_service=event_service,
-    )
-    report = ReportAgent(
-        llm_client=None,
-        working_memory=wm.for_writer("ReportAgent"),
-        event_service=event_service,
-    )
-
-    pipeline = AnalysisOnlyPipeline(
-        event_service=event_service,
-        state_machine=state_machine_service,
-        triage_agent=triage,
-        evidence_agent=evidence,
-        rag_agent=rag,
-        risk_agent=risk,
-        report_agent=report,
-        context_store=store,
-    )
-
-    # Create a required high-severity event by going through the ingest path.
-    # For this test, use a mock_xdr source which default to required policy.
     from app.models.enums import SourceDisposition, SourceObjectKind
     from app.models.source import SourceReference
     from app.services.event_service import IngestableSource
+
+    pipeline, projection, bind_projection, _store = _build_integration_pipeline(
+        event_service=event_service,
+        state_machine_service=state_machine_service,
+        session_factory=session_factory,
+    )
 
     ref = SourceReference(
         source_kind=SourceObjectKind.INCIDENT,
@@ -1241,7 +1308,7 @@ async def test_high_risk_event_stays_reporting(
         source_object_id="INC-HIGH-001",
         source_status_raw="open",
         source_disposition=SourceDisposition.PENDING,
-        schema_version=1,
+        schema_version="1",
     )
     ingest = IngestableSource(
         reference=ref,
@@ -1257,9 +1324,9 @@ async def test_high_risk_event_stays_reporting(
     event = await event_service.get_event(event_id)
     assert event is not None
 
-    # Only run pipeline on NEW events.
     if event.status == EventStatus.NEW:
-        pipeline_result = await pipeline.run(event_id)
+        with bind_projection(projection):
+            pipeline_result = await pipeline.run(event_id)
         assert pipeline_result.disposition_policy == "required"
         assert pipeline_result.analysis_only_complete is True
 
@@ -1276,61 +1343,12 @@ async def test_analysis_only_complete_persisted_in_context(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """analysis_only_complete is persisted to EventContextStore after pipeline runs."""
-    from app.agents.evidence_agent import EvidenceAgent
-    from app.agents.rag_agent import RAGAgent
-    from app.agents.report_agent import ReportAgent
-    from app.agents.risk_agent import RiskAgent
-    from app.agents.triage_agent import TriageAgent
-    from app.core.config import get_settings
-    from app.core.redis_client import RedisClient
-    from app.services.analysis_only_pipeline import AnalysisOnlyPipeline
-    from app.services.context_service import EventContextStore
-    from app.services.degraded_flag_service import DegradedFlagService
-    from app.services.working_memory import WorkingMemory
-
-    settings = get_settings()
-
-    redis = RedisClient(url=settings.redis_url)
-    store = EventContextStore(redis, session_factory)
-    degraded = DegradedFlagService(store, session_factory)
-    wm = WorkingMemory(store=store, redis=redis, degraded_flags=degraded)
-
-    triage = TriageAgent(
-        llm_client=None,
-        working_memory=wm.for_writer("TriageAgent"),
-    )
-    evidence = EvidenceAgent(
-        llm_client=None,
-        tool_executor=None,
-        working_memory=wm.for_writer("EvidenceAgent"),
-    )
-    rag = RAGAgent(
-        working_memory=wm.for_writer("RAGAgent"),
-        pipeline=None,
-    )
-    risk = RiskAgent(
-        llm_client=None,
-        working_memory=wm.for_writer("RiskAgent"),
+    pipeline, projection, bind_projection, store = _build_integration_pipeline(
         event_service=event_service,
-    )
-    report = ReportAgent(
-        llm_client=None,
-        working_memory=wm.for_writer("ReportAgent"),
-        event_service=event_service,
+        state_machine_service=state_machine_service,
+        session_factory=session_factory,
     )
 
-    pipeline = AnalysisOnlyPipeline(
-        event_service=event_service,
-        state_machine=state_machine_service,
-        triage_agent=triage,
-        evidence_agent=evidence,
-        rag_agent=rag,
-        risk_agent=risk,
-        report_agent=report,
-        context_store=store,
-    )
-
-    # Create a not_required low-severity event (short-circuit close path).
     event = await event_service.create_event(
         {"title": "Persistence test", "description": "Low risk"},
         source_type="manual",
@@ -1340,11 +1358,10 @@ async def test_analysis_only_complete_persisted_in_context(
     )
     event_id = event.event_id
 
-    # Run the pipeline.
-    result = await pipeline.run(event_id)
+    with bind_projection(projection):
+        result = await pipeline.run(event_id)
     assert result.analysis_only_complete is True
 
-    # Verify persistence via EventContextStore.
     stored_value = await store.get(event_id, "analysis_only_complete")
     assert stored_value is True, (
         f"Expected analysis_only_complete=True in context, got {stored_value!r}"

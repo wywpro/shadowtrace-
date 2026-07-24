@@ -229,35 +229,67 @@ async def get_pipeline() -> Any:
         from app.agents.report_agent import ReportAgent
         from app.agents.risk_agent import RiskAgent
         from app.agents.triage_agent import TriageAgent
+        from app.core.guardrails import OutputGuard
+        from app.core.llm.factory import get_llm_client
+        from app.services.agent_trace_service import AgentTraceService
         from app.services.analysis_only_pipeline import AnalysisOnlyPipeline
+        from app.services.budget_service import BudgetService
+        from app.tools.executor import get_tool_executor
 
+        settings = get_settings()
         event_service = await get_event_service()
         state_machine = await get_state_machine()
         wm = await _get_wm()
+        session_factory = _get_session_factory()
+        budget_service = BudgetService(redis=_get_redis(), settings=settings)
+        output_guard = OutputGuard()
+        trace_service = AgentTraceService(session_factory)
+        llm_client = get_llm_client(settings=settings, budget_service=budget_service)
+        tool_executor = get_tool_executor()
+        tool_executor.budget_service = budget_service
 
         triage = TriageAgent(
-            llm_client=None,
+            llm_client=llm_client,
             working_memory=wm.for_writer("TriageAgent"),
+            budget_service=budget_service,
+            output_guard=output_guard,
+            trace_service=trace_service,
         )
         evidence = EvidenceAgent(
-            llm_client=None,
-            tool_executor=None,
+            llm_client=llm_client,
+            tool_executor=tool_executor,
             working_memory=wm.for_writer("EvidenceAgent"),
+            budget_service=budget_service,
+            output_guard=output_guard,
+            trace_service=trace_service,
+            event_service=event_service,
+            session_factory=session_factory,
         )
         rag = RAGAgent(
             working_memory=wm.for_writer("RAGAgent"),
             pipeline=None,
+            budget_service=budget_service,
+            output_guard=output_guard,
+            trace_service=trace_service,
         )
         risk = RiskAgent(
-            llm_client=None,
+            llm_client=llm_client,
             working_memory=wm.for_writer("RiskAgent"),
+            budget_service=budget_service,
+            output_guard=output_guard,
+            trace_service=trace_service,
             event_service=event_service,
+            scenario_id="insider_data_exfiltration",
         )
         report = ReportAgent(
-            llm_client=None,
+            llm_client=llm_client,
             working_memory=wm.for_writer("ReportAgent"),
+            budget_service=budget_service,
+            output_guard=output_guard,
+            trace_service=trace_service,
             event_service=event_service,
             event_bus=_get_event_bus(),
+            scenario_id="insider_data_exfiltration",
         )
 
         _pipeline = AnalysisOnlyPipeline(
@@ -270,6 +302,7 @@ async def get_pipeline() -> Any:
             report_agent=report,
             context_store=_get_context_store(),
             degraded_flags=_get_degraded_flags(),
+            settings=settings,
         )
     return _pipeline
 

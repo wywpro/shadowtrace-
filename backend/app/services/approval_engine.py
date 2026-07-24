@@ -370,6 +370,18 @@ class ApprovalEngine:
                         details={"action_id": action_id},
                     )
                 action = _action_from_orm(row)
+
+                if decision_id:
+                    replay = await session.scalar(
+                        select(ApprovalRecordORM).where(
+                            ApprovalRecordORM.action_id == action_id,
+                            ApprovalRecordORM.decision_id == decision_id,
+                            ApprovalRecordORM.decided_at.is_not(None),
+                        )
+                    )
+                    if replay is not None:
+                        return
+
                 record = await self._load_pending_record_row(session, action_id)
 
                 if record is not None and record.decided_at is not None:
@@ -385,6 +397,21 @@ class ApprovalEngine:
                     )
 
                 if action.status is not ActionStatus.WAITING_APPROVAL:
+                    if action.status in _APPROVAL_TERMINAL:
+                        prior_decision = await session.scalar(
+                            select(ApprovalRecordORM.approval_id).where(
+                                ApprovalRecordORM.action_id == action_id,
+                                ApprovalRecordORM.decided_at.is_not(None),
+                            )
+                        )
+                        if prior_decision is not None:
+                            raise ApprovalDecisionConflictError(
+                                "approval already decided by another operator",
+                                details={
+                                    "action_id": action_id,
+                                    "current_status": action.status.value,
+                                },
+                            )
                     raise InvalidStateTransitionError(
                         "action is not waiting for approval",
                         current=action.status.value,

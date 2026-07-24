@@ -267,6 +267,9 @@ def build_insider_data_exfiltration(
         normalized={
             "account": ACCOUNT,
             "hostname": HOST,
+            "ip": "10.20.30.23",
+            "dst_ip": EXFIL_IP,
+            "domain": EXFIL_DOMAIN,
             "risk_score": 92,
         },
     )

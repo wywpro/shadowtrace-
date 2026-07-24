@@ -307,13 +307,13 @@ class StorylineService:
             )
 
         if len(sorted_evidence) < 3:
-            phases = _build_scarce_single_phase(sorted_evidence)
-            _backfill_technique_ids(phases, technique_matches)
+            scarce_phases = _build_scarce_single_phase(sorted_evidence)
+            _backfill_technique_ids(scarce_phases, technique_matches)
             return AttackStoryline(
                 storyline_id=new_storyline_id(),
                 event_id=event_id,
-                narrative_summary=_summary_for_phases(phases),
-                phases=phases,
+                narrative_summary=_summary_for_phases(scarce_phases),
+                phases=scarce_phases,
                 generated_by=StorylineGeneratedBy.RULE,
             )
 
@@ -323,7 +323,7 @@ class StorylineService:
             phase = _bucket_evidence(ev)
             phase_buckets[phase].append(ev)
 
-        phases: list[StorylinePhase] = []
+        storyline_phases: list[StorylinePhase] = []
         for phase_name in StorylinePhaseName:
             bucket = phase_buckets.get(phase_name, [])
             if not bucket:
@@ -336,7 +336,7 @@ class StorylineService:
                 )
                 for e in bucket
             ]
-            phases.append(
+            storyline_phases.append(
                 StorylinePhase(
                     phase_order=_PHASE_ORDER[phase_name],
                     phase_name=phase_name,
@@ -347,7 +347,7 @@ class StorylineService:
 
         # Defence-in-depth: under current _bucket_evidence (POST_ACTION fallback)
         # this branch is unreachable; kept as a safety net for future refactors.
-        if not phases and sorted_evidence:
+        if not storyline_phases and sorted_evidence:
             entries = [
                 TimelineEntry(
                     timestamp=_parse_ts(e.get("timestamp")) or _TS_MIN,
@@ -356,7 +356,7 @@ class StorylineService:
                 )
                 for e in sorted_evidence
             ]
-            phases = [
+            storyline_phases = [
                 StorylinePhase(
                     phase_order=5,
                     phase_name=StorylinePhaseName.POST_ACTION,
@@ -366,13 +366,13 @@ class StorylineService:
             ]
 
         # Backfill technique_ids
-        _backfill_technique_ids(phases, technique_matches)
+        _backfill_technique_ids(storyline_phases, technique_matches)
 
         return AttackStoryline(
             storyline_id=new_storyline_id(),
             event_id=event_id,
-            narrative_summary=_summary_for_phases(phases),
-            phases=phases,
+            narrative_summary=_summary_for_phases(storyline_phases),
+            phases=storyline_phases,
             generated_by=StorylineGeneratedBy.RULE,
         )
 

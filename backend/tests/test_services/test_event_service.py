@@ -1138,6 +1138,37 @@ async def test_noop_set_final_verdict_skips_bus_publish(
 
 
 @pytest.mark.asyncio
+async def test_set_final_verdict_publishes_locked_socket_payload(
+    event_service: EventService,
+) -> None:
+    bus = AsyncMock()
+    bus.publish_event = AsyncMock(return_value=None)
+    event_service._bus = bus  # noqa: SLF001
+
+    sfx = _sfx()
+    created = await event_service.ingest_source_object(
+        IngestableSource(
+            reference=_ref(kind=SourceObjectKind.ALERT, object_id=f"AL-verdict-{sfx}"),
+            title="socket-verdict",
+            source_type="mock_xdr",
+        )
+    )
+    bus.publish_event.reset_mock()
+
+    await event_service.set_final_verdict(
+        created.event_id,
+        FinalVerdict.FALSE_POSITIVE,
+        operator="test",
+    )
+
+    bus.publish_event.assert_awaited_once_with(
+        created.event_id,
+        "final_verdict_updated",
+        {"verdict": "false_positive"},
+    )
+
+
+@pytest.mark.asyncio
 async def test_update_risk_fields_publishes_risk_updated_payload(
     event_service: EventService,
     session_factory: async_sessionmaker[AsyncSession],
@@ -1241,10 +1272,14 @@ async def test_upsert_report_idempotent_by_report_id(
 
     async with session_factory() as session:
         rows = (
-            await session.execute(
-                select(orm.Report).where(orm.Report.event_id == created.event_id)
+            (
+                await session.execute(
+                    select(orm.Report).where(orm.Report.event_id == created.event_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(rows) == 1
 
 
@@ -1323,8 +1358,10 @@ async def test_upsert_response_plan_actions_idempotent_by_fingerprint(
 
     async with session_factory() as session:
         rows = (
-            await session.execute(select(orm.Action).where(orm.Action.event_id == event_id))
-        ).scalars().all()
+            (await session.execute(select(orm.Action).where(orm.Action.event_id == event_id)))
+            .scalars()
+            .all()
+        )
         assert len(rows) == 1
         journal = await session.scalar(
             select(func.count())

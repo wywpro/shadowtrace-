@@ -54,6 +54,7 @@ EXPECTED_CONTEXT_FIELDS = {
     "triage_degraded",
     "graph_degraded",
     "storyline_degraded",
+    "analysis_only_complete",
 }
 
 

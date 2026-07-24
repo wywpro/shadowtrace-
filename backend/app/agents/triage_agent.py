@@ -539,7 +539,20 @@ class TriageAgent(BaseAgent[TriageAgentInput, TriageResult]):
                 # regex — the LLM path still produced a valid result.  degraded
                 # is only True when the LLM path fails entirely and we fall back
                 # to regex extraction.
-                return parsed.entities, False, parsed.reasoning
+                entities = parsed.entities
+                if not any(
+                    (
+                        entities.accounts,
+                        entities.hosts,
+                        entities.ips,
+                        entities.domains,
+                        entities.processes,
+                        entities.files,
+                    )
+                ):
+                    regex_entities = await self._regex_fallback(alert_text)
+                    return regex_entities, True, parsed.reasoning or ""
+                return parsed.entities, False, parsed.reasoning or ""
 
             # Parsed successfully but unexpected type — use regex.
             entities = await self._regex_fallback(alert_text)
@@ -576,6 +589,16 @@ class TriageAgent(BaseAgent[TriageAgentInput, TriageResult]):
                     exc,
                     exc_info=True,
                 )
+            entities = await self._regex_fallback(alert_text)
+            return entities, True, ""
+
+        except Exception as exc:
+            logger.warning(
+                "Unexpected LLM entity extraction error for event=%s: %s",
+                event_id,
+                exc,
+                exc_info=True,
+            )
             entities = await self._regex_fallback(alert_text)
             return entities, True, ""
 

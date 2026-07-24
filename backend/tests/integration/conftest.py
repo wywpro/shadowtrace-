@@ -105,10 +105,14 @@ async def _truncate_business_tables(
 
 
 async def _clear_shadowtrace_keys(redis_client: RedisClient) -> None:
-    client = redis_client.get_client()
-    keys = [key async for key in client.scan_iter(match="shadowtrace:*", count=500)]
-    if keys:
-        await client.delete(*keys)
+    try:
+        client = redis_client.get_client()
+        keys = [key async for key in client.scan_iter(match="shadowtrace:*", count=500)]
+        if keys:
+            await client.delete(*keys)
+    except RuntimeError:
+        # TestClient may close the asyncio loop before fixture teardown runs.
+        pass
 
 
 @pytest_asyncio.fixture

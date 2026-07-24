@@ -20,6 +20,7 @@ from app.models.enums import (
     EventStatus,
     EventType,
     FinalVerdict,
+    QualityVerdict,
     Severity,
     WritebackReadiness,
     WritebackStatus,
@@ -649,3 +650,24 @@ AGENT_INPUT_MODELS: dict[AgentName, type[AgentInput]] = {
 }
 
 AGENT_INPUT_BY_NAME = AGENT_INPUT_MODELS
+
+
+# --------------------------------------------------------------------------- #
+# Output quality evaluation (ISSUE-065)
+# --------------------------------------------------------------------------- #
+
+
+class OutputQualityScore(BaseModel):
+    """Per-agent output quality score computed by OutputQualityEvaluator.
+
+    Fields match intro §4.13 ``OutputQualityScore`` and §4.6 ``QualityVerdict``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_name: str
+    score: float = Field(ge=0.0, le=1.0)
+    verdict: QualityVerdict
+    metrics: dict[str, float] = Field(default_factory=dict)
+    reasons: list[str] = Field(default_factory=list)
+    evaluated_by: Literal["rule", "llm"]
