@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -538,14 +537,22 @@ async def test_checkpoint_persists_with_ttl_and_resumes_in_new_saver() -> None:
 
 @pytest.mark.asyncio
 async def test_redis_unavailable_uses_nonrecoverable_memory_fallback(
-    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     redis = FakeRedisClient(available=False)
-    with caplog.at_level(logging.WARNING, logger="app.orchestration.checkpointer"):
-        saver = await RedisCheckpointer.create(redis)  # type: ignore[arg-type]
+    warnings: list[str] = []
+
+    def _capture_warning(message: str, *args: object, **kwargs: object) -> None:
+        warnings.append(message % args if args else message)
+
+    monkeypatch.setattr(
+        "app.orchestration.checkpointer.logger.warning",
+        _capture_warning,
+    )
+    saver = await RedisCheckpointer.create(redis)  # type: ignore[arg-type]
     assert saver.memory_fallback is True
     assert saver.recoverable is False
-    assert any("process restart cannot recover" in record.getMessage() for record in caplog.records)
+    assert any("process restart cannot recover" in message for message in warnings)
 
 
 @pytest.mark.asyncio
