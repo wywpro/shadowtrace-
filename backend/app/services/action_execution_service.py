@@ -467,9 +467,7 @@ class ActionExecutionService:
     async def _current_revision(self, event_id: str) -> int:
         async with self._session_factory() as session:
             value = await session.scalar(
-                select(func.max(orm.Action.plan_revision)).where(
-                    orm.Action.event_id == event_id
-                )
+                select(func.max(orm.Action.plan_revision)).where(orm.Action.event_id == event_id)
             )
         return int(value or 1)
 
@@ -530,9 +528,7 @@ class ActionExecutionService:
                 writeback_applicable=bool(row.writeback_applicable),
                 writeback_readiness=WritebackReadiness(row.writeback_readiness),
                 writeback_status=(
-                    WritebackStatus(row.writeback_status)
-                    if row.writeback_status
-                    else None
+                    WritebackStatus(row.writeback_status) if row.writeback_status else None
                 ),
             )
             for row in actions

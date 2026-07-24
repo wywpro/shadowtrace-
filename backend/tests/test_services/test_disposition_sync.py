@@ -181,29 +181,33 @@ def _locator(*, object_id: str = "88442201") -> SourceObjectLocator:
 async def _seed_event_action_source(
     session_factory: async_sessionmaker[AsyncSession],
     store: EventContextStore,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, SourceObjectLocator]:
     sfx = _sfx()
     event_id = f"evt-sync-{sfx}"
     action_id = f"act-{sfx}"
     connector_id = "conn-disposition"
     source_record_id = f"src-{sfx}"
+    object_id = f"INC-{sfx}"
+    locator = _locator(object_id=object_id)
     ref = SourceReference(
         source_kind=SourceObjectKind.INCIDENT,
         source_product="mock_xdr",
         source_tenant_id="tenant-demo",
         connector_id=connector_id,
-        source_object_id="88442201",
+        source_object_id=object_id,
         ingested_at=datetime.now(UTC),
     )
     async with session_factory() as session:
         async with session.begin():
-            session.add(
-                orm.SourceConnector(
-                    connector_id=connector_id,
-                    source_product="mock_xdr",
-                    display_name="Mock XDR",
+            existing = await session.get(orm.SourceConnector, connector_id)
+            if existing is None:
+                session.add(
+                    orm.SourceConnector(
+                        connector_id=connector_id,
+                        source_product="mock_xdr",
+                        display_name="Mock XDR",
+                    )
                 )
-            )
             session.add(
                 orm.SourceObject(
                     source_record_id=source_record_id,
@@ -211,7 +215,7 @@ async def _seed_event_action_source(
                     source_tenant_id="tenant-demo",
                     connector_id=connector_id,
                     source_kind=SourceObjectKind.INCIDENT.value,
-                    source_object_id="88442201",
+                    source_object_id=object_id,
                     current_concurrency_token="tok-1",
                     next_outbox_sequence=0,
                 )
@@ -230,7 +234,7 @@ async def _seed_event_action_source(
                     creation_source_ref=ref.model_dump(mode="json"),
                     source_reference_snapshots=[ref.model_dump(mode="json")],
                     disposition_policy=DispositionPolicy.REQUIRED.value,
-                    disposition_source_ref=_locator().model_dump(mode="json"),
+                    disposition_source_ref=locator.model_dump(mode="json"),
                     occurred_at=datetime.now(UTC),
                 )
             )
@@ -252,7 +256,7 @@ async def _seed_event_action_source(
                     writeback_required=True,
                     writeback_applicable=True,
                     writeback_readiness=WritebackReadiness.READY.value,
-                    disposition_source_ref=_locator().model_dump(mode="json"),
+                    disposition_source_ref=locator.model_dump(mode="json"),
                     idempotency_key=f"idem-{sfx}",
                 )
             )
@@ -262,7 +266,7 @@ async def _seed_event_action_source(
         from app.services.context_service import event_summary_from_security_event
 
         await store.init_context(event_id, event_summary_from_security_event(row))
-    return event_id, action_id, source_record_id
+    return event_id, action_id, source_record_id, locator
 
 
 def _sync_service(
@@ -295,7 +299,7 @@ async def test_enqueue_and_deliver_outbox(
     mock_xdr_client: httpx.AsyncClient,
     cleanup: None,
 ) -> None:
-    event_id, action_id, source_record_id = await _seed_event_action_source(
+    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
         session_factory, store
     )
     sync = _sync_service(session_factory, store, mock_xdr_client)
@@ -316,13 +320,13 @@ async def test_enqueue_and_deliver_outbox(
             "writeback_required": True,
             "writeback_applicable": True,
             "writeback_readiness": WritebackReadiness.READY,
-            "disposition_source_ref": _locator(),
+            "disposition_source_ref": locator,
             "idempotency_key": f"idem-{_sfx()}",
         }
     )
     command = factory.build_entity_action_submit(
         action,
-        source_locator=_locator(),
+        source_locator=locator,
         source_concurrency_token="tok-1",
         operator_id="ActionExecutionService",
         disposition_id=new_disposition_id(),
@@ -360,7 +364,7 @@ async def test_retry_unknown_writeback_rejected(
     mock_xdr_client: httpx.AsyncClient,
     cleanup: None,
 ) -> None:
-    event_id, action_id, source_record_id = await _seed_event_action_source(
+    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
         session_factory, store
     )
     sync = _sync_service(session_factory, store, mock_xdr_client)
@@ -381,7 +385,7 @@ async def test_retry_unknown_writeback_rejected(
                     intent_kind="entity_action_submit",
                     logical_slot="default",
                     idempotency_key=f"idem-{_sfx()}",
-                    command_payload={"source_locator": _locator().model_dump(mode="json")},
+                    command_payload={"source_locator": locator.model_dump(mode="json")},
                     command_payload_sha256="deadbeef",
                     delivery_status="delivered",
                     latest_writeback_status=WritebackStatus.UNKNOWN.value,
@@ -398,7 +402,7 @@ async def test_resolve_writeback_manual_confirmed(
     mock_xdr_client: httpx.AsyncClient,
     cleanup: None,
 ) -> None:
-    event_id, action_id, source_record_id = await _seed_event_action_source(
+    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
         session_factory, store
     )
     writeback_id = f"wbk-{_sfx()}"
@@ -418,7 +422,7 @@ async def test_resolve_writeback_manual_confirmed(
                     intent_kind="entity_action_submit",
                     logical_slot="default",
                     idempotency_key=f"idem-{_sfx()}",
-                    command_payload={"source_locator": _locator().model_dump(mode="json")},
+                    command_payload={"source_locator": locator.model_dump(mode="json")},
                     command_payload_sha256="deadbeef",
                     delivery_status="delivered",
                     latest_writeback_status=WritebackStatus.UNKNOWN.value,
@@ -442,7 +446,7 @@ async def test_resume_hook_called_on_terminal_writeback(
     mock_xdr_client: httpx.AsyncClient,
     cleanup: None,
 ) -> None:
-    event_id, action_id, source_record_id = await _seed_event_action_source(
+    event_id, action_id, source_record_id, locator = await _seed_event_action_source(
         session_factory, store
     )
     resume = AsyncMock()
@@ -470,7 +474,7 @@ async def test_resume_hook_called_on_terminal_writeback(
                     intent_kind="entity_action_submit",
                     logical_slot="default",
                     idempotency_key=f"idem-{_sfx()}",
-                    command_payload={"source_locator": _locator().model_dump(mode="json")},
+                    command_payload={"source_locator": locator.model_dump(mode="json")},
                     command_payload_sha256="deadbeef",
                     delivery_status="delivered",
                     latest_writeback_status=WritebackStatus.UNKNOWN.value,

@@ -81,9 +81,7 @@ async def get_writeback(
         ),
         provider_code=receipt.provider_code if receipt is not None else None,
         message_code=receipt.provider_message if receipt is not None else None,
-        target_results=(
-            [item for item in receipt.target_results] if receipt is not None else []
-        ),
+        target_results=([item for item in receipt.target_results] if receipt is not None else []),
     )
 
 

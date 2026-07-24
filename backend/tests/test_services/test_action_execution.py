@@ -316,10 +316,13 @@ async def _create_event(
     store: EventContextStore,
     *,
     status: EventStatus = EventStatus.EXECUTING_RESPONSE,
+    object_id: str | None = None,
 ) -> str:
     sfx = _sfx()
     event_id = f"evt-exec-{sfx}"
-    ref = _ref(object_id="88442201")
+    resolved_object_id = object_id or f"INC-{sfx}"
+    ref = _ref(object_id=resolved_object_id)
+    locator = _locator(object_id=resolved_object_id)
     async with session_factory() as session:
         async with session.begin():
             session.add(
@@ -336,7 +339,7 @@ async def _create_event(
                     creation_source_ref=ref.model_dump(mode="json"),
                     source_reference_snapshots=[ref.model_dump(mode="json")],
                     disposition_policy=DispositionPolicy.REQUIRED.value,
-                    disposition_source_ref=_locator().model_dump(mode="json"),
+                    disposition_source_ref=locator.model_dump(mode="json"),
                     occurred_at=datetime.now(UTC),
                 )
             )
@@ -422,12 +425,17 @@ async def test_xdr_managed_execute_plan_submits_outbox(
     execution_service: ActionExecutionService,
     cleanup: None,
 ) -> None:
-    await _seed_connector_and_source(session_factory)
-    event_id = await _create_event(session_factory, store)
+    oid = f"INC-{_sfx()}"
+    await _seed_connector_and_source(session_factory, object_id=oid)
+    event_id = await _create_event(session_factory, store, object_id=oid)
     action = await _insert_action(
         session_factory,
         event_id,
-        _action_model(event_id=event_id, execution_owner=ExecutionOwner.XDR_MANAGED),
+        _action_model(
+            event_id=event_id,
+            execution_owner=ExecutionOwner.XDR_MANAGED,
+            disposition_source_ref=_locator(object_id=oid),
+        ),
     )
     summary = await execution_service.execute_plan(event_id)
     async with session_factory() as session:
